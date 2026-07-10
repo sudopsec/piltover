@@ -75,7 +75,7 @@ Setup:
     ```
 3. Generate tl classes:
     ```shell
-    poetry shell python tools/tl_gen.py
+    poetry run python tools/tl_gen.py
     ```
 4. (Optional) Install MariaDB, Redis and RabbitMQ.
 5. (Optional) Set up your own config:
