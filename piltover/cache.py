@@ -22,8 +22,16 @@ class TLSerializer(BaseSerializer):
         self.encoding = None
 
     def dumps(self, value: TLObject | int | str | bytes | bool | float | None) -> bytes:
-        ser_type = bytes([0 if isinstance(value, TLObject) else self._TYPES_TO_INT[type(value)]])
-        return ser_type + SerializationUtils.write(value)
+        if isinstance(value, TLObject):
+            ser_type = 0
+            to_write = value
+        elif type(value) is int:
+            ser_type = self._TYPES_TO_INT[Int]
+            to_write = Int(value)
+        else:
+            ser_type = self._TYPES_TO_INT[type(value)]
+            to_write = value
+        return bytes([ser_type]) + SerializationUtils.write(to_write)
 
     def loads(self, value: bytes | None) -> TLObject | int | str | bytes | bool | float | None:
         if value is None or len(value) < 5 or value[0] < 0 or value[0] > len(self._TYPES):
