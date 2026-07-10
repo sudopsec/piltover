@@ -34,14 +34,14 @@ async def _seconds_until(key: str, min_interval: int) -> int | None:
     return None
 
 
-async def check_send_code_allowed(phone_number: str, auth_key_id: int | None) -> None:
+async def check_send_code_allowed(ip: str, auth_key_id: int | None) -> None:
     cfg = _cfg()
 
-    if (wait := await _seconds_until(f"auth:send:last:{phone_number}", cfg.send_code_min_interval_seconds)) is not None:
+    if (wait := await _seconds_until(f"auth:send:last:{ip}", cfg.send_code_min_interval_seconds)) is not None:
         _flood_wait(wait)
 
-    phone_count = await Cache.obj.get(f"auth:send:phone:{phone_number}")
-    if phone_count is not None and int(phone_count) >= cfg.send_code_per_phone_limit:
+    ip_count = await Cache.obj.get(f"auth:send:ip:{ip}")
+    if ip_count is not None and int(ip_count) >= cfg.send_code_per_ip_limit:
         _flood_wait(cfg.send_code_min_interval_seconds)
 
     if auth_key_id is not None:
@@ -50,33 +50,33 @@ async def check_send_code_allowed(phone_number: str, auth_key_id: int | None) ->
             _flood_wait(cfg.send_code_min_interval_seconds)
 
 
-async def record_send_code(phone_number: str, auth_key_id: int | None) -> None:
+async def record_send_code(ip: str, auth_key_id: int | None) -> None:
     cfg = _cfg()
     now = int(time())
 
     await Cache.obj.set(
-        f"auth:send:last:{phone_number}",
+        f"auth:send:last:{ip}",
         now,
-        ttl=cfg.send_code_per_phone_window_seconds,
+        ttl=cfg.send_code_per_ip_window_seconds,
     )
-    await _bump_counter(f"auth:send:phone:{phone_number}", cfg.send_code_per_phone_window_seconds)
+    await _bump_counter(f"auth:send:ip:{ip}", cfg.send_code_per_ip_window_seconds)
     if auth_key_id is not None:
         await _bump_counter(f"auth:send:key:{auth_key_id}", cfg.send_code_per_key_window_seconds)
 
 
-async def is_shadow_banned(phone_number: str) -> bool:
-    return await Cache.obj.exists(f"auth:shadow:{phone_number}")
+async def is_shadow_banned(ip: str) -> bool:
+    return await Cache.obj.exists(f"auth:shadow:{ip}")
 
 
-async def check_sign_in_allowed(phone_number: str, auth_key_id: int | None) -> None:
-    if await is_shadow_banned(phone_number):
+async def check_sign_in_allowed(ip: str, auth_key_id: int | None) -> None:
+    if await is_shadow_banned(ip):
         raise ErrorRpc(error_code=400, error_message="PHONE_CODE_INVALID")
 
     cfg = _cfg()
     failures = 0
-    phone_failures = await Cache.obj.get(f"auth:fail:phone:{phone_number}")
-    if phone_failures is not None:
-        failures = max(failures, int(phone_failures))
+    ip_failures = await Cache.obj.get(f"auth:fail:ip:{ip}")
+    if ip_failures is not None:
+        failures = max(failures, int(ip_failures))
     if auth_key_id is not None:
         key_failures = await Cache.obj.get(f"auth:fail:key:{auth_key_id}")
         if key_failures is not None:
@@ -86,22 +86,22 @@ async def check_sign_in_allowed(phone_number: str, auth_key_id: int | None) -> N
         _flood_wait(min(600, 60 * (failures - cfg.sign_in_fail_limit + 1)))
 
 
-async def record_sign_in_failure(phone_number: str, auth_key_id: int | None) -> None:
+async def record_sign_in_failure(ip: str, auth_key_id: int | None) -> None:
     cfg = _cfg()
 
-    phone_failures = await _bump_counter(f"auth:fail:phone:{phone_number}", cfg.sign_in_fail_window_seconds)
+    ip_failures = await _bump_counter(f"auth:fail:ip:{ip}", cfg.sign_in_fail_window_seconds)
     if auth_key_id is not None:
         key_failures = await _bump_counter(f"auth:fail:key:{auth_key_id}", cfg.sign_in_fail_window_seconds)
     else:
         key_failures = 0
 
-    failures = max(phone_failures, key_failures)
+    failures = max(ip_failures, key_failures)
     if failures >= cfg.shadow_ban_fail_threshold:
-        await Cache.obj.set(f"auth:shadow:{phone_number}", 1, ttl=cfg.shadow_ban_duration_seconds)
-        logger.warning("Shadow ban applied for phone {phone_number} after {failures} failed sign-in attempts", phone_number=phone_number, failures=failures)
+        await Cache.obj.set(f"auth:shadow:{ip}", 1, ttl=cfg.shadow_ban_duration_seconds)
+        logger.warning("Shadow ban applied for ip {ip} after {failures} failed sign-in attempts", ip=ip, failures=failures)
 
 
-async def clear_sign_in_failures(phone_number: str, auth_key_id: int | None) -> None:
-    await Cache.obj.delete(f"auth:fail:phone:{phone_number}")
+async def clear_sign_in_failures(ip: str, auth_key_id: int | None) -> None:
+    await Cache.obj.delete(f"auth:fail:ip:{ip}")
     if auth_key_id is not None:
         await Cache.obj.delete(f"auth:fail:key:{auth_key_id}")

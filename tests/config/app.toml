@@ -33,8 +33,8 @@ account_delete_wait_seconds = 604800
 
 [app.auth_rate_limit]
 send_code_min_interval_seconds = 0
-send_code_per_phone_limit = 100
-send_code_per_phone_window_seconds = 3600
+send_code_per_ip_limit = 100
+send_code_per_ip_window_seconds = 3600
 send_code_per_key_limit = 100
 send_code_per_key_window_seconds = 3600
 sign_in_fail_limit = 5

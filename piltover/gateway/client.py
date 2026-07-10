@@ -169,6 +169,7 @@ class Client:
             user_id=session.user_id,
             is_bot=session.is_bot,
             mfa_pending=session.mfa_pending,
+            ip=self.peername[0],
         ).write().hex()
 
         with measure_time(".kiq()"):

@@ -50,6 +50,13 @@ def _auth_key_id() -> int | None:
         return None
 
 
+def _client_ip() -> str:
+    try:
+        return request_ctx.get().ip
+    except LookupError:
+        return "127.0.0.1"
+
+
 def _validate_phone(phone_number: str) -> str:
     phone_number = "".join(filter(lambda ch: ch.isdigit(), phone_number))
 
@@ -65,7 +72,8 @@ def _validate_phone(phone_number: str) -> str:
 async def _send_or_resend_code(phone_number: str, code_hash: str | None) -> TLSentCode:
     phone_number = _validate_phone(phone_number)
     auth_key_id = _auth_key_id()
-    await check_send_code_allowed(phone_number, auth_key_id)
+    client_ip = _client_ip()
+    await check_send_code_allowed(client_ip, auth_key_id)
 
     if code_hash is None:
         code = await SentCode.create(phone_number=phone_number, purpose=PhoneCodePurpose.SIGNIN)
@@ -80,7 +88,7 @@ async def _send_or_resend_code(phone_number: str, code_hash: str | None) -> TLSe
             code.expires_at = SentCode.gen_expires_at()
             await code.save(update_fields=["code", "hash", "expires_at"])
 
-    await record_send_code(phone_number, auth_key_id)
+    await record_send_code(client_ip, auth_key_id)
 
     logger.trace(
         f"Code info: id={code.id!r}, phone_number={code.phone_number!r}, code={code.code!r}, hash={code.hash!r}"
@@ -118,7 +126,8 @@ async def sign_in(request: SignIn) -> AuthAuthorization | AuthorizationSignUpReq
         raise ErrorRpc(error_code=400, error_message="PHONE_CODE_EMPTY")
     phone_number = _validate_phone(request.phone_number)
     auth_key_id = _auth_key_id()
-    await check_sign_in_allowed(phone_number, auth_key_id)
+    client_ip = _client_ip()
+    await check_sign_in_allowed(client_ip, auth_key_id)
     try:
         int(request.phone_code)
     except ValueError:
@@ -126,20 +135,20 @@ async def sign_in(request: SignIn) -> AuthAuthorization | AuthorizationSignUpReq
 
     code = await SentCode.get_(phone_number, request.phone_code_hash, PhoneCodePurpose.SIGNIN)
     if code is None:
-        await record_sign_in_failure(phone_number, auth_key_id)
+        await record_sign_in_failure(client_ip, auth_key_id)
         raise ErrorRpc(error_code=400, error_message="PHONE_CODE_INVALID", reason="sent_code is None")
 
     try:
         await code.check_raise(request.phone_code)
     except ErrorRpc:
-        await record_sign_in_failure(phone_number, auth_key_id)
+        await record_sign_in_failure(client_ip, auth_key_id)
         raise
 
     code.used = False
     code.expires_at = SentCode.gen_expires_at()
     code.purpose = PhoneCodePurpose.SIGNUP
     await code.save(update_fields=["used", "expires_at", "purpose"])
-    await clear_sign_in_failures(phone_number, auth_key_id)
+    await clear_sign_in_failures(client_ip, auth_key_id)
 
     if (user := await User.get_or_none(phone_number=phone_number)) is None:
         return AuthorizationSignUpRequired()

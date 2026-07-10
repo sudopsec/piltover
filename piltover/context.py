@@ -15,13 +15,13 @@ T = TypeVar("T")
 
 class RequestContext(Generic[T]):
     __slots__ = (
-        "auth_key_id", "perm_auth_key_id", "message_id", "session_id", "obj", "auth_id", "user_id", "layer", "worker",
-        "storage",
+        "auth_key_id", "perm_auth_key_id", "message_id", "session_id", "obj", "auth_id", "user_id", "layer", "ip",
+        "worker", "storage",
     )
 
     def __init__(
             self, auth_key_id: int, perm_auth_key_id: int | None, message_id: int, session_id: int, obj: T, layer: int,
-            auth_id: int | None, user_id: int | None, worker: Worker, storage: BaseStorage,
+            auth_id: int | None, user_id: int | None, worker: Worker, storage: BaseStorage, ip: str = "127.0.0.1",
     ):
         self.auth_key_id = auth_key_id
         self.perm_auth_key_id = perm_auth_key_id
@@ -31,6 +31,7 @@ class RequestContext(Generic[T]):
         self.auth_id = auth_id
         self.user_id = user_id
         self.layer = layer
+        self.ip = ip
         self.worker = worker
         self.storage = storage
 
