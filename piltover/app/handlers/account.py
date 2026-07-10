@@ -28,7 +28,8 @@ from piltover.session import SessionManager
 from piltover.tl import PeerNotifySettings as TLPeerNotifySettings, GlobalPrivacySettings, AccountDaysTTL, EmojiList, \
     AutoDownloadSettings, PasswordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow, Long, \
     UpdatesTooLong, DocumentAttributeFilename, TLObjectVector, InputWallPaperNoFile, InputChannelEmpty, \
-    EmojiListNotModified, PrivacyValueDisallowAll, String, EmojiStatusEmpty, EmojiStatus, \
+    EmojiListNotModified, PrivacyValueDisallowAll, PrivacyValueAllowAll, PrivacyValueAllowContacts, String, \
+    EmojiStatusEmpty, EmojiStatus, \
     GlobalPrivacySettings_200, InputFile, InputFileBig, WallPaperSettings
 from piltover.tl.base.account import ResetPasswordResult
 from piltover.tl.base import User as TLUserBase, WallPaper as TLWallPaperBase
@@ -217,8 +218,10 @@ async def get_password_settings(request: GetPasswordSettings, user_id: int) -> P
 async def get_privacy_internal(key: PrivacyRuleKeyType, user_id: int) -> PrivacyRules:
     rule = await PrivacyRule.get_or_none(user_id=user_id, key=key).prefetch_related("exceptions", "exceptions__user")
     if rule is None:
+        if PrivacyRule.default_allow_all(key):
+            return PrivacyRules(rules=[PrivacyValueAllowAll()], chats=[], users=[])
         return PrivacyRules(
-            rules=[PrivacyValueDisallowAll()],
+            rules=[PrivacyValueDisallowAll(), PrivacyValueAllowContacts()],
             chats=[],
             users=[],
         )

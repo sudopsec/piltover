@@ -21,7 +21,7 @@ from piltover.config import APP_CONFIG
 from piltover.context import request_ctx
 from piltover.db.enums import PeerType
 from piltover.db.models import AuthKey, UserAuthorization, UserPassword, Peer, TempAuthKey, SentCode, User, \
-    QrLogin, PhoneCodePurpose, State
+    QrLogin, PhoneCodePurpose, State, PrivacyRule
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc
 from piltover.session import SessionManager
@@ -193,6 +193,7 @@ async def sign_up(request: SignUp | SignUp_133):
         last_name=request.last_name
     )
     await State.create(user=user)
+    await PrivacyRule.create_defaults_for_user(user)
     await Peer.create(owner=user, type=PeerType.SELF, user=user)
     key = await AuthKey.get(id=request_ctx.get().perm_auth_key_id)
     await UserAuthorization.create(ip="127.0.0.1", user=user, key=key)

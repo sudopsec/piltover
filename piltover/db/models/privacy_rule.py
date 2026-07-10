@@ -10,7 +10,7 @@ from tortoise.transactions import in_transaction
 from piltover.cache import Cache
 from piltover.context import request_ctx
 from piltover.db import models
-from piltover.db.enums import PrivacyRuleKeyType
+from piltover.db.enums import PrivacyRuleKeyType, _PRIVACY_ENUM_KEY_TO_TL
 from piltover.db.models import Contact
 from piltover.tl import PrivacyValueAllowContacts, PrivacyValueAllowAll, PrivacyValueAllowUsers, \
     PrivacyValueDisallowAll, PrivacyValueDisallowUsers, InputPrivacyValueAllowContacts, InputPrivacyValueAllowAll, \
@@ -51,6 +51,27 @@ class PrivacyRule(Model):
         unique_together = (
             ("user", "key"),
         )
+
+    @classmethod
+    def default_allow_all(cls, key: PrivacyRuleKeyType) -> bool:
+        return key != PrivacyRuleKeyType.PHONE_NUMBER
+
+    @classmethod
+    def default_allow_contacts(cls, key: PrivacyRuleKeyType) -> bool:
+        return key == PrivacyRuleKeyType.PHONE_NUMBER
+
+    @classmethod
+    async def create_defaults_for_user(cls, user: models.User | int) -> None:
+        user_id = user.id if isinstance(user, models.User) else user
+        await cls.bulk_create([
+            cls(
+                user_id=user_id,
+                key=key,
+                allow_all=cls.default_allow_all(key),
+                allow_contacts=cls.default_allow_contacts(key),
+            )
+            for key in _PRIVACY_ENUM_KEY_TO_TL
+        ], ignore_conflicts=True)
 
     @classmethod
     async def update_from_tl(
@@ -171,7 +192,9 @@ class PrivacyRule(Model):
 
         rule_simple = await cls.get_or_none(user_id=target_id, key=key).only("id", "version")
         if rule_simple is None:
-            return False
+            if cls.default_allow_all(key):
+                return True
+            return await Contact.filter(owner_id=target_id, target_id=current_id).exists()
 
         cache_key = cls.cache_key(current_id, target_id, key, rule_simple.version)
         cached = await Cache.obj.get(cache_key)
@@ -302,7 +325,10 @@ class PrivacyRule(Model):
             to_cache.append((cache_key, False))
 
         for user_id, key in leftover:
-            results[user_id][key] = False
+            if cls.default_allow_all(key):
+                results[user_id][key] = True
+            else:
+                results[user_id][key] = user_id in contacts
 
         if to_cache:
             await Cache.obj.multi_set(to_cache)

@@ -74,6 +74,7 @@ async def get_full_user(request: GetFullUser, user_id: int) -> UserFull:
         PrivacyRuleKeyType.ABOUT,
         PrivacyRuleKeyType.BIRTHDAY,
         PrivacyRuleKeyType.PROFILE_PHOTO,
+        PrivacyRuleKeyType.PHONE_CALL,
     ])
     privacy_rules = privacy_rules[target_user.id]
 
@@ -153,7 +154,7 @@ async def get_full_user(request: GetFullUser, user_id: int) -> UserFull:
             personal_channel_message=personal_channel_msg_id,
             bot_info=bot_info,
             blocked=peer.blocked_at is not None,
-            phone_calls_available=True,
+            phone_calls_available=not target_user.bot and privacy_rules[PrivacyRuleKeyType.PHONE_CALL],
             phone_calls_private=False,
             fallback_photo=photo_fallback_db.to_tl() if photo_fallback_db is not None else None,
             translations_disabled=True,
