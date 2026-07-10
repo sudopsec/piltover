@@ -8,11 +8,11 @@ from piltover.tl.functions.messages import GetPeerSettings, GetQuickReplies, Get
     GetStickers, GetSuggestedDialogFilters, GetSavedReactionTags, \
     GetFeaturedStickers, GetFeaturedEmojiStickers, GetEmojiKeywords, GetWebPagePreview, GetDefaultTagReactions, \
     GetEmojiKeywordsDifference, GetAvailableEffects, GetSponsoredMessages, ReportSponsoredMessage, ViewSponsoredMessage, \
-    ClickSponsoredMessage
+    ClickSponsoredMessage, TranscribeAudio, RateTranscribedAudio
 from piltover.tl.types.channels import SponsoredMessageReportResultReported
 from piltover.tl.types.messages import PeerSettings as MessagesPeerSettings, Reactions, SavedReactionTags, \
     Stickers, FeaturedStickers, MessageEditData, \
-    QuickReplies, AvailableEffects, SponsoredMessages, SponsoredMessagesEmpty
+    QuickReplies, AvailableEffects, SponsoredMessages, SponsoredMessagesEmpty, TranscribedAudio
 from piltover.worker import MessageHandler
 
 handler = MessageHandler("messages.stubs")
@@ -174,4 +174,14 @@ async def click_sponsored_message() -> bool:  # pragma: no cover
 
 @handler.on_request(ViewSponsoredMessage, ReqHandlerFlags.AUTH_NOT_REQUIRED)
 async def view_sponsored_message() -> bool:  # pragma: no cover
+    return True
+
+
+@handler.on_request(TranscribeAudio)
+async def transcribe_audio() -> TranscribedAudio:  # pragma: no cover
+    return TranscribedAudio(transcription_id=0, text="")
+
+
+@handler.on_request(RateTranscribedAudio)
+async def rate_transcribed_audio() -> bool:  # pragma: no cover
     return True
