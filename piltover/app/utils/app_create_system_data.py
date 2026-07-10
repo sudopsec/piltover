@@ -809,6 +809,7 @@ async def create_system_data(
             ("stickers", "Stickers"),
             ("gif", "Tenor GIF Search"),
             ("system", "System info"),
+            ("stars", "Stars"),
         ])
 
     auth_countries_file = cast(Path, args.auth_countries_file)

@@ -151,6 +151,24 @@ async def create_payment_form(user_id: int, invoice: object) -> PaymentFormStars
     )
 
 
+async def grant_stars(
+        user_id: int,
+        stars: int,
+        *,
+        title: str = "Stars Bonus",
+        description: str | None = None,
+) -> UserStarsBalance:
+    balance, _ = await _credit_stars(
+        user_id,
+        stars,
+        inbound=True,
+        peer_type=StarsTransactionPeerType.API,
+        title=title,
+        description=description or f"Received {stars} Telegram Stars",
+    )
+    return balance
+
+
 async def _credit_stars(
         wallet_user_id: int,
         stars: int,
