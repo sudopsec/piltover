@@ -1,6 +1,11 @@
 from piltover.enums import ReqHandlerFlags
+from piltover.exceptions import ErrorRpc
 from piltover.tl import WebPageEmpty, AttachMenuBots, EmojiKeywordsDifference, \
-    PeerSettings, TLObjectVector
+    PeerSettings, TLObjectVector, InputReportReasonSpam, InputReportReasonViolence, \
+    InputReportReasonPornography, InputReportReasonChildAbuse, InputReportReasonCopyright, \
+    InputReportReasonFake, InputReportReasonIllegalDrugs, InputReportReasonPersonalDetails, \
+    InputReportReasonOther, MessageReportOption, ReportResultChooseOption, ReportResultAddComment, \
+    ReportResultReported
 from piltover.tl.base.channels import SponsoredMessageReportResult
 from piltover.tl.functions.channels import GetSponsoredMessages_133
 from piltover.tl.functions.messages import GetPeerSettings, GetQuickReplies, GetMessageEditData, \
@@ -8,7 +13,7 @@ from piltover.tl.functions.messages import GetPeerSettings, GetQuickReplies, Get
     GetStickers, GetSuggestedDialogFilters, GetSavedReactionTags, \
     GetFeaturedStickers, GetFeaturedEmojiStickers, GetEmojiKeywords, GetWebPagePreview, GetDefaultTagReactions, \
     GetEmojiKeywordsDifference, GetAvailableEffects, GetSponsoredMessages, ReportSponsoredMessage, ViewSponsoredMessage, \
-    ClickSponsoredMessage, TranscribeAudio, RateTranscribedAudio
+    ClickSponsoredMessage, TranscribeAudio, RateTranscribedAudio, Report
 from piltover.tl.types.channels import SponsoredMessageReportResultReported
 from piltover.tl.types.messages import PeerSettings as MessagesPeerSettings, Reactions, SavedReactionTags, \
     Stickers, FeaturedStickers, MessageEditData, \
@@ -16,6 +21,19 @@ from piltover.tl.types.messages import PeerSettings as MessagesPeerSettings, Rea
 from piltover.worker import MessageHandler
 
 handler = MessageHandler("messages.stubs")
+
+_REPORT_OPTIONS = [
+    ("Spam", InputReportReasonSpam()),
+    ("Violence", InputReportReasonViolence()),
+    ("Pornography", InputReportReasonPornography()),
+    ("Child Abuse", InputReportReasonChildAbuse()),
+    ("Copyright", InputReportReasonCopyright()),
+    ("Scam or fraud", InputReportReasonFake()),
+    ("Illegal goods", InputReportReasonIllegalDrugs()),
+    ("Personal data", InputReportReasonPersonalDetails()),
+    ("Other", InputReportReasonOther()),
+]
+_OTHER_REPORT_OPTION = InputReportReasonOther().write()
 
 
 @handler.on_request(GetPeerSettings, ReqHandlerFlags.AUTH_NOT_REQUIRED)
@@ -162,6 +180,26 @@ async def get_sponsored_messages() -> SponsoredMessages | SponsoredMessagesEmpty
     # )
 
 
+@handler.on_request(Report, ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def report_message(request: Report) -> ReportResultChooseOption | ReportResultAddComment | ReportResultReported:
+    if not request.id:
+        raise ErrorRpc(error_code=400, error_message="MESSAGE_REQUIRED")
+
+    if not request.option:
+        return ReportResultChooseOption(
+            title="What is wrong with this message?",
+            options=[
+                MessageReportOption(text=text, option=reason.write())
+                for text, reason in _REPORT_OPTIONS
+            ],
+        )
+
+    if request.option == _OTHER_REPORT_OPTION and not request.message:
+        return ReportResultAddComment(optional=True, option=request.option)
+
+    return ReportResultReported()
+
+
 @handler.on_request(ReportSponsoredMessage, ReqHandlerFlags.AUTH_NOT_REQUIRED)
 async def report_sponsored_message() -> SponsoredMessageReportResult:  # pragma: no cover
     return SponsoredMessageReportResultReported()
@@ -179,7 +217,7 @@ async def view_sponsored_message() -> bool:  # pragma: no cover
 
 @handler.on_request(TranscribeAudio)
 async def transcribe_audio() -> TranscribedAudio:  # pragma: no cover
-    return TranscribedAudio(transcription_id=0, text="")
+    return TranscribedAudio(transcription_id=0, text="ку")
 
 
 @handler.on_request(RateTranscribedAudio)
