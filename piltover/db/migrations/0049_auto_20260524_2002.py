@@ -1,7 +1,18 @@
+from typing import Any
+
 from tortoise import migrations
 from tortoise.migrations import operations as ops
 from tortoise.migrations.schema_editor import BaseSchemaEditor
 from tortoise.migrations.schema_generator.state_apps import StateApps
+
+
+def _row_value(row: Any, *keys: str) -> Any:
+    if isinstance(row, dict):
+        for key in keys:
+            if key in row:
+                return row[key]
+        return next(iter(row.values()))
+    return row[0]
 
 
 async def remove_readhistory_unique_constraint(
@@ -25,7 +36,8 @@ async def remove_readhistory_unique_constraint(
                AND SUM(COLUMN_NAME = 'peer_id') > 0
             """,
         )
-        index_names = {row[0] for row in rows}
+        index_names = {_row_value(row, "INDEX_NAME") for row in rows}
+        index_names.discard(None)
         index_names.add("uid_readhistory_user_id_044953")
         for index_name in index_names:
             try:
@@ -40,8 +52,9 @@ async def remove_readhistory_unique_constraint(
         _ignored, rows = await client.execute_query(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'readhistorychunk'",
         )
-        for (index_name,) in rows:
-            if index_name.startswith("sqlite_"):
+        for row in rows:
+            index_name = _row_value(row, "name")
+            if not index_name or index_name.startswith("sqlite_"):
                 continue
             try:
                 await client.execute_script(f'DROP INDEX "{index_name}"')
