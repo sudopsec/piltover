@@ -36,7 +36,8 @@ from piltover.tl.base import User as TLUserBase, WallPaper as TLWallPaperBase
 from piltover.tl.functions.account import UpdateStatus, UpdateProfile, GetNotifySettings, GetDefaultEmojiStatuses, \
     GetContentSettings, GetThemes, GetGlobalPrivacySettings, GetPrivacy, GetPassword, \
     RegisterDevice, GetAccountTTL, GetAuthorizations, UpdateUsername, CheckUsername, RegisterDevice_70, \
-    GetSavedRingtones, GetAutoDownloadSettings, GetDefaultProfilePhotoEmojis, GetWebAuthorizations, SetAccountTTL, \
+    GetSavedRingtones, GetAutoDownloadSettings, GetDefaultProfilePhotoEmojis, GetDefaultGroupPhotoEmojis, \
+    GetWebAuthorizations, SetAccountTTL, \
     SaveAutoDownloadSettings, UpdatePasswordSettings, GetPasswordSettings, SetPrivacy, UpdateBirthday, \
     ChangeAuthorizationSettings, ResetAuthorization, ResetPassword, DeclinePasswordReset, SendChangePhoneCode, \
     ChangePhone, DeleteAccount, GetChatThemes, UploadWallPaper_133, UploadWallPaper, GetWallPaper, GetMultiWallPapers, \
@@ -413,6 +414,11 @@ async def save_auto_download_settings() -> bool:  # pragma: no cover
 
 @handler.on_request(GetDefaultProfilePhotoEmojis, ReqHandlerFlags.AUTH_NOT_REQUIRED | ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def get_default_profile_photo_emojis(request: GetDefaultProfilePhotoEmojis) -> EmojiList:  # pragma: no cover
+    return EmojiList(hash=request.hash, document_id=[])
+
+
+@handler.on_request(GetDefaultGroupPhotoEmojis, ReqHandlerFlags.AUTH_NOT_REQUIRED | ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def get_default_group_photo_emojis(request: GetDefaultGroupPhotoEmojis) -> EmojiList:  # pragma: no cover
     return EmojiList(hash=request.hash, document_id=[])
 
 
