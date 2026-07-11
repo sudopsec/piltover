@@ -1,8 +1,15 @@
 from __future__ import annotations
 import logging
+import sys
+from os import environ
 from typing import Self
 
 from loguru import logger
+
+
+def configure_logging(level: str | None = None) -> None:
+    logger.remove()
+    logger.add(sys.stderr, level=level or environ.get("LOGURU_LEVEL", "INFO"))
 
 
 # https://stackoverflow.com/a/72735401
