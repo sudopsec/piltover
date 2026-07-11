@@ -4,21 +4,16 @@ import shutil
 from array import array
 from asyncio import get_event_loop
 from pathlib import Path
-from types import SimpleNamespace
+
 from typing import Any
 
 from loguru import logger
 from pyrogram import Client
 
+from download_utils import DEFAULT_SESSION_BY_SCRIPT, DownloadClientArgs, add_download_client_args, download_client
 from piltover.tl.types.help import PeerColors
 from tests._peer_colors_compat import GetPeerColorsCompat, PeerColorsCompat, PeerColorOptionCompat, \
     PeerColorOption_167Compat, PeerColorSetCompat, PeerColorProfileSetCompat, GetPeerProfileColorsCompat
-
-
-class ArgsNamespace(SimpleNamespace):
-    api_id: int
-    api_hash: str
-    data_dir: Path
 
 
 def TLObject_default(obj: Any) -> str | dict[str, str] | list:
@@ -77,12 +72,8 @@ async def extract_peer_colors(client: Client, out_dir: Path) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-id", required=False, type=int, help="Telegram api id")
-    parser.add_argument("--api-hash", required=False, type=str, help="Telegram api hash")
-    parser.add_argument("--data-dir", type=Path,
-                        help="Path to data directory to where peer colors will be download",
-                        default=Path("./data").resolve())
-    args = parser.parse_args(namespace=ArgsNamespace())
+    add_download_client_args(parser, default_session=DEFAULT_SESSION_BY_SCRIPT["peer_colors"])
+    args = parser.parse_args(namespace=DownloadClientArgs())
 
     out_dir = args.data_dir / "peer_colors"
     if out_dir.exists():
@@ -95,9 +86,7 @@ async def main() -> None:
     with open(out_dir / ".gitignore", "w") as f:
         f.write("*\n")
 
-    async with Client(
-            name="telegram", api_id=args.api_id, api_hash=args.api_hash, workdir=str(args.data_dir / "secrets"),
-    ) as client:
+    async with download_client(args) as client:
         await extract_peer_colors(client, out_dir)
 
 

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastrand import xorshift128plus_bytes
 from loguru import logger
-from tortoise.expressions import Q, Subquery
+from tortoise.expressions import Q
 
 from piltover.app.utils.utils import telegram_hash
 from piltover.config import APP_CONFIG, SYSTEM_CONFIG
@@ -681,11 +681,8 @@ async def _create_system_stickers(args: ArgsNamespace) -> None:
                 SYSTEM_CONFIG.data_dir, sets_dir / set_dir, idx, doc, FileType.DOCUMENT_STICKER,
             ))
 
-        await File.filter(
-            id__in=Subquery(File.filter(
-                stickerset=stickerset, id__not_in=[file.id for file in created_files],
-            ).values_list("id", flat=True))
-        ).update(stickerset_id=None)
+        created_ids = [file.id for file in created_files]
+        await File.filter(stickerset=stickerset).exclude(id__in=created_ids).update(stickerset_id=None)
 
         stickerset.hash = telegram_hash(stickerset.gen_for_hash(await stickerset.documents_query()), 32)
         await stickerset.save(update_fields=["hash"])
@@ -787,11 +784,7 @@ async def _create_emoji_groups(groups_dir: Path) -> None:
             else:
                 logger.success(f"Updated emoji group \"{emoji_group.name}\" (id {fake_orig_id})")
 
-        await EmojiGroup.filter(
-            id__in=Subquery(EmojiGroup.filter(
-                category=cat, id__not_in=created_group_ids,
-            ).values_list("id", flat=True))
-        ).delete()
+        await EmojiGroup.filter(category=cat).exclude(id__in=created_group_ids).delete()
 
         logger.success(f"Processed all emoji groups in category \"{cat!r}\" ")
 

@@ -3,7 +3,7 @@ import json
 import shutil
 from asyncio import get_event_loop
 from pathlib import Path
-from types import SimpleNamespace
+
 from typing import cast
 
 from loguru import logger
@@ -15,7 +15,9 @@ from pyrogram.raw.types import InputStickerSetID, InputStickerSetAnimatedEmoji, 
     InputStickerSetEmojiDefaultStatuses, InputStickerSetEmojiDefaultTopicIcons, Document, InputStickerSetShortName
 from pyrogram.raw.types.messages import StickerSet as MessagesStickerSet
 
-from download_utils import download_document, ClientCachedMediaSessions
+from download_utils import (
+    DEFAULT_SESSION_BY_SCRIPT, DownloadClientArgs, add_download_client_args, download_client, download_document,
+)
 
 InputStickerSet = InputStickerSetID | InputStickerSetAnimatedEmoji | InputStickerSetDice \
                   | InputStickerSetAnimatedEmojiAnimations | InputStickerSetEmojiGenericAnimations \
@@ -41,10 +43,7 @@ to_download = [
 ]
 
 
-class ArgsNamespace(SimpleNamespace):
-    api_id: int
-    api_hash: str
-    data_dir: Path
+class ArgsNamespace(DownloadClientArgs):
     clean: bool
 
 
@@ -74,12 +73,8 @@ async def download_stickerset(client: Client, out_dir: Path, stickerset: InputSt
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-id", required=False, type=int, help="Telegram api id")
-    parser.add_argument("--api-hash", required=False, type=str, help="Telegram api hash")
+    add_download_client_args(parser, default_session=DEFAULT_SESSION_BY_SCRIPT["stickersets"])
     parser.add_argument("--clean", action="store_true", help="Clean target directory before downloading")
-    parser.add_argument("--data-dir", type=Path,
-                        help="Path to data directory to where stickersets will be download",
-                        default=Path("./data").resolve())
     args = parser.parse_args(namespace=ArgsNamespace())
 
     out_dir = args.data_dir / "stickersets"
@@ -90,9 +85,7 @@ async def main() -> None:
     with open(out_dir / ".gitignore", "w") as f:
         f.write("*\n")
 
-    async with ClientCachedMediaSessions(
-            name="telegram", api_id=args.api_id, api_hash=args.api_hash, workdir=str(args.data_dir / "secrets"),
-    ) as client:
+    async with download_client(args, cached_media=True) as client:
         for set_type, input_set in to_download:
             set_out_dir = out_dir / set_type
             set_out_dir.mkdir(parents=True, exist_ok=True)

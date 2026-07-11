@@ -3,33 +3,25 @@ import json
 import shutil
 from asyncio import get_event_loop
 from pathlib import Path
-from types import SimpleNamespace
+
 from typing import Any, cast
 
 from loguru import logger
-from pyrogram import Client
+
 from pyrogram.raw.core import TLObject
 from pyrogram.raw.functions.messages import GetAvailableReactions
 from pyrogram.raw.types import AvailableReaction
 from pyrogram.raw.types.messages import AvailableReactions
 
-from download_utils import download_document
-
-
-class ArgsNamespace(SimpleNamespace):
-    api_id: int
-    api_hash: str
-    data_dir: Path
+from download_utils import (
+    DEFAULT_SESSION_BY_SCRIPT, DownloadClientArgs, add_download_client_args, download_client, download_document,
+)
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-id", required=False, type=int, help="Telegram api id")
-    parser.add_argument("--api-hash", required=False, type=str, help="Telegram api hash")
-    parser.add_argument("--data-dir", type=Path,
-                        help="Path to data directory to where reactions will be download",
-                        default=Path("./data").resolve())
-    args = parser.parse_args(namespace=ArgsNamespace())
+    add_download_client_args(parser, default_session=DEFAULT_SESSION_BY_SCRIPT["reactions"])
+    args = parser.parse_args(namespace=DownloadClientArgs())
 
     reactions_dir = args.data_dir / "reactions"
     if reactions_dir.exists():
@@ -39,9 +31,7 @@ async def main() -> None:
     with open(reactions_dir / ".gitignore", "w") as f:
         f.write("*\n")
 
-    async with Client(
-            name="telegram", api_id=args.api_id, api_hash=args.api_hash, workdir=str(args.data_dir / "secrets"),
-    ) as client:
+    async with download_client(args, cached_media=True) as client:
         reactions: AvailableReactions = await client.invoke(GetAvailableReactions(hash=0))
         reactions: list[AvailableReaction] = reactions.reactions
         logger.info(f"Got {len(reactions)} reactions")
