@@ -18,55 +18,58 @@ from piltover.worker import MessageHandler
 
 handler = MessageHandler("users")
 
+_PEER_FULL_USER_RELATIONS = (
+    "user__username", "user__background_emojis", "user__emoji_status", "user__bot_info",
+)
+_PEER_FULL_USER_ONLY = (
+    "id", "user_has_wallpaper", "user_ttl_period_days", "blocked_at", "type", "user_id",
+
+    "user__id",
+    "user__phone_number",
+    "user__first_name",
+    "user__last_name",
+    "user__lang_code",
+    "user__about",
+    "user__birthday",
+    "user__bot",
+    "user__deleted",
+    "user__read_dates_private",
+    "user__version",
+    "user__accent_color_id",
+    "user__profile_color_id",
+
+    "user__username__username",
+
+    "user__background_emojis__accent_emoji_id",
+    "user__background_emojis__profile_emoji_id",
+
+    "user__emoji_status__emoji_id",
+    "user__emoji_status__until",
+
+    "user__bot_info__user_id",
+    "user__bot_info__description",
+    "user__bot_info__description_photo_id",
+    "user__bot_info__privacy_policy_url",
+    "user__bot_info__version",
+
+    "user__bot_info__description_photo__id",
+    "user__bot_info__description_photo__created_at",
+    "user__bot_info__description_photo__photo_sizes",
+    "user__bot_info__description_photo__photo_stripped",
+    "user__bot_info__description_photo__photo_path",
+    "user__bot_info__description_photo__constant_access_hash",
+    "user__bot_info__description_photo__constant_file_ref",
+)
+
 
 @handler.on_request(GetFullUser, ReqHandlerFlags.DONT_FETCH_USER)
 async def get_full_user(request: GetFullUser, user_id: int) -> UserFull:
-    ctx = request_ctx.get()
-
-    peer_query = Peer.query_from_input_user_or_raise(user_id, request.id, ctx.auth_id)
-    peer: PeerUserT = await peer_query.select_related(
-        "user__username", "user__background_emojis", "user__emoji_status", "user__bot_info"
-    ).only(
-        "id", "user_has_wallpaper", "user_ttl_period_days", "blocked_at", "type", "user_id",
-
-        "user__id",
-        "user__phone_number",
-        "user__first_name",
-        "user__last_name",
-        "user__lang_code",
-        "user__about",
-        "user__birthday",
-        "user__bot",
-        "user__deleted",
-        "user__read_dates_private",
-        "user__version",
-        "user__accent_color_id",
-        "user__profile_color_id",
-
-        "user__username__username",
-
-        "user__background_emojis__accent_emoji_id",
-        "user__background_emojis__profile_emoji_id",
-
-        "user__emoji_status__emoji_id",
-        "user__emoji_status__until",
-
-        "user__bot_info__user_id",
-        "user__bot_info__description",
-        "user__bot_info__description_photo_id",
-        "user__bot_info__privacy_policy_url",
-        "user__bot_info__version",
-
-        "user__bot_info__description_photo__id",
-        "user__bot_info__description_photo__created_at",
-        "user__bot_info__description_photo__photo_sizes",
-        "user__bot_info__description_photo__photo_stripped",
-        "user__bot_info__description_photo__photo_path",
-        "user__bot_info__description_photo__constant_access_hash",
-        "user__bot_info__description_photo__constant_file_ref",
+    peer: PeerUserT = await Peer.from_input_peer_raise(
+        user_id, request.id, select_related=_PEER_FULL_USER_RELATIONS,
     )
-    if peer is None:
-        raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
+    peer = await Peer.filter(id=peer.id).select_related(*_PEER_FULL_USER_RELATIONS).only(
+        *_PEER_FULL_USER_ONLY,
+    ).first()
 
     target_user = peer.user
 

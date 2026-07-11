@@ -271,8 +271,19 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
             if peer_types is not None and PeerType.USER not in peer_types:
                 return None
             if select_user_username:
-                select_related = *select_related, "user__username"
-            return await query.select_related("owner", "user", *select_related)
+                select_related = (*select_related, "user__username")
+            peer = await query.select_related("owner", "user", *select_related)
+            if peer is not None:
+                return peer
+
+            target = await models.User.get_or_none(id=input_peer.user_id, deleted=False)
+            if target is None or (not allow_bot and target.bot):
+                return None
+
+            peer, _ = await cls.get_or_create(
+                owner_id=user_id, user_id=input_peer.user_id, defaults={"type": PeerType.USER},
+            )
+            return await cls.filter(id=peer.id).select_related("owner", "user", *select_related).first()
 
         if isinstance(input_peer, InputPeerChat):
             if peer_types is not None and PeerType.CHAT not in peer_types:
@@ -304,12 +315,16 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
         if self.type is PeerType.USER:
             if self.user_id == 777000:
                 return []
-            peer, created = await Peer.get_or_create(type=PeerType.USER, owner_id=self.user_id, user_id=self.owner_id)
-            if peer.blocked_at is not None and not allow_blocked:
+            opposite_peer, _ = await Peer.get_or_create(
+                type=PeerType.USER, owner_id=self.user_id, user_id=self.owner_id,
+            )
+            if opposite_peer.blocked_at is not None and not allow_blocked:
                 return []
-            peer.user = self.owner
-            peer.owner = self.user
-            return [peer]
+            owner_user = await models.User.get(id=self.owner_id)
+            target_user = await models.User.get(id=self.user_id)
+            opposite_peer.user = owner_user
+            opposite_peer.owner = target_user
+            return [opposite_peer]
         elif self.type is PeerType.CHAT:
             return await Peer.filter(
                 type=PeerType.CHAT, owner_id__not=self.owner_id, chat_id=self.chat_id,
