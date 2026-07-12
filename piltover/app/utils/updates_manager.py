@@ -2409,8 +2409,9 @@ async def _broadcast_group_call_participants(
         to_participants_only,
         recipients,
     )
+    send_tasks = []
     if other_recipients:
-        spawn_group_call_broadcast(SessionManager.send(
+        send_tasks.append(SessionManager.send(
             _make_group_call_participants_updates(
                 group_call, participants,
                 viewer_user_id=None,
@@ -2423,7 +2424,7 @@ async def _broadcast_group_call_participants(
             user_id=other_recipients,
         ))
     for recipient_id in self_recipients:
-        spawn_group_call_broadcast(SessionManager.send(
+        send_tasks.append(SessionManager.send(
             _make_group_call_participants_updates(
                 group_call, participants,
                 viewer_user_id=recipient_id,
@@ -2435,6 +2436,8 @@ async def _broadcast_group_call_participants(
             ),
             user_id=recipient_id,
         ))
+    if send_tasks:
+        await asyncio.gather(*send_tasks)
 
 
 async def _active_group_call_participant_ids(group_call) -> list[int]:
@@ -2648,7 +2651,7 @@ async def group_call_participants_update_with_call_rpc(
         call=await group_call.to_tl(participants_count=participants_count),
     )
 
-    spawn_group_call_broadcast(_broadcast_group_call_participants(
+    await _broadcast_group_call_participants(
         chat_or_channel, group_call, participants,
         exclude_user_ids=exclude_user_ids,
         just_joined=just_joined,
@@ -2656,7 +2659,7 @@ async def group_call_participants_update_with_call_rpc(
         include_chat=just_joined,
         participant_versioned=participant_versioned,
         extra_updates=[call_update],
-    ))
+    )
 
 
 async def group_call_speaking_update(

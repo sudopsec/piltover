@@ -679,7 +679,7 @@ async def join_group_call(
     source = await ensure_unique_ssrc(group_call, client_ssrc, user_id=user_id)
 
     participant = await GroupCallParticipant.get_or_none(group_call=group_call, user_id=user_id)
-    created = False
+    just_joined = False
     if participant is None:
         participant = await GroupCallParticipant.create(
             group_call=group_call,
@@ -690,8 +690,9 @@ async def join_group_call(
             muted=muted,
             video_stopped=video_stopped,
         )
-        created = True
+        just_joined = True
     else:
+        was_left = participant.left
         participant.left = False
         normalize_fields = normalize_admin_mute_db_state(participant)
         if participant.muted_by_admin or participant.is_admin_volume_silent():
@@ -709,9 +710,10 @@ async def join_group_call(
             participant.source = source
             update_fields.append("source")
         await participant.save(update_fields=update_fields)
+        just_joined = was_left
 
     await group_call.bump_participants_version()
-    return participant, created
+    return participant, just_joined
 
 
 async def resolve_group_call_participant(

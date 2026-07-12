@@ -152,7 +152,7 @@ async def join_group_call_handler(request: JoinGroupCall | JoinGroupCall_133, us
 
     client_params, client_ssrc = parse_join_client_params(request.params)
 
-    participant, created = await join_group_call(
+    participant, just_joined = await join_group_call(
         user_id,
         group_call,
         request.join_as,
@@ -165,15 +165,19 @@ async def join_group_call_handler(request: JoinGroupCall | JoinGroupCall_133, us
 
     schedule_sfu_participant_audio_state(group_call.id, participant)
 
-    upd.spawn_group_call_broadcast(upd.group_call_participants_update_with_call_rpc(
-        chat_or_channel, group_call, [participant],
-        exclude_user_ids=[user_id], just_joined=created,
-        participant_versioned=False,
-    ))
+    async def _load_active_participants() -> list[GroupCallParticipant]:
+        return list(await GroupCallParticipant.filter(
+            group_call=group_call, left=False,
+        ).select_related("user", "join_as_user", "join_as_channel").order_by("joined_at"))
 
-    all_participants = await GroupCallParticipant.filter(
-        group_call=group_call, left=False,
-    ).select_related("user", "join_as_user", "join_as_channel").order_by("joined_at")
+    _, all_participants = await asyncio.gather(
+        upd.group_call_participants_update_with_call_rpc(
+            chat_or_channel, group_call, [participant],
+            exclude_user_ids=[user_id], just_joined=just_joined,
+            participant_versioned=False,
+        ),
+        _load_active_participants(),
+    )
 
     user_ids: set[int] = set()
     for call_participant in all_participants:
@@ -205,7 +209,7 @@ async def join_group_call_handler(request: JoinGroupCall | JoinGroupCall_133, us
                 participants=[
                     call_participant.to_tl(
                         self_user_id=user_id,
-                        just_joined=call_participant.user_id == user_id and created,
+                        just_joined=call_participant.user_id == user_id and just_joined,
                         versioned=False,
                     )
                     for call_participant in all_participants
