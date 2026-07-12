@@ -17,7 +17,7 @@ from piltover.app.utils.group_calls import (
 from piltover.db.models import Channel, GroupCall, GroupCallParticipant, User
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc
-from piltover.tl import DataJSON, IntVector, Updates, UpdateGroupCallConnection, UpdateGroupCallParticipants
+from piltover.tl import DataJSON, IntVector, Updates, UpdateGroupCall, UpdateGroupCallConnection, UpdateGroupCallParticipants
 from piltover.tl.functions.phone import (
     CheckGroupCall, CreateGroupCall, DiscardGroupCall, EditGroupCallParticipant, EditGroupCallTitle,
     ExportGroupCallInvite, GetGroupCall, GetGroupCallJoinAs, GetGroupParticipants, JoinGroupCall,
@@ -170,28 +170,52 @@ async def join_group_call_handler(request: JoinGroupCall | JoinGroupCall_133, us
         exclude_user_ids=[user_id], just_joined=created,
         participant_versioned=False,
     ))
-    connection_params, users_tl = await asyncio.gather(
+
+    all_participants = await GroupCallParticipant.filter(
+        group_call=group_call, left=False,
+    ).select_related("user", "join_as_user", "join_as_channel").order_by("joined_at")
+
+    user_ids: set[int] = set()
+    for call_participant in all_participants:
+        user_ids.add(call_participant.user_id)
+        if call_participant.join_as_user_id is not None:
+            user_ids.add(call_participant.join_as_user_id)
+
+    participants_count = len(all_participants)
+    connection_params, users_tl, call_tl, chat_tl = await asyncio.gather(
         build_connection_params(
             request.params,
             group_call_id=group_call.id,
             user_id=user_id,
             source=participant.source,
         ),
-        User.to_tl_bulk([participant.user]),
+        User.to_tl_bulk(await User.filter(id__in=user_ids)),
+        group_call.to_tl(participants_count=participants_count),
+        chat_or_channel.to_tl(),
     )
 
     return UpdatesWithDefaults(
         updates=[
+            UpdateGroupCall(
+                chat_id=chat_or_channel.make_id(),
+                call=call_tl,
+            ),
             UpdateGroupCallParticipants(
                 call=group_call.to_input(),
                 participants=[
-                    participant.to_tl(self_user_id=user_id, just_joined=created, versioned=False),
+                    call_participant.to_tl(
+                        self_user_id=user_id,
+                        just_joined=call_participant.user_id == user_id and created,
+                        versioned=False,
+                    )
+                    for call_participant in all_participants
                 ],
                 version=group_call.version,
             ),
             UpdateGroupCallConnection(params=connection_params),
         ],
         users=users_tl,
+        chats=[chat_tl],
     )
 
 

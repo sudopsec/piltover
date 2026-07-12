@@ -1087,7 +1087,9 @@ async def update_dialog_unread_mark(user_id: int, dialog: Dialog) -> None:
     ), user_id)
 
 
-async def update_read_history_inbox(peer: Peer, max_id: int, unread_count: int) -> tuple[int, Updates]:
+async def update_read_history_inbox(
+        peer: Peer, max_id: int, unread_count: int, *, broadcast: bool = True,
+) -> tuple[int, Updates]:
     pts = await State.add_pts(peer.owner_id, 1)
     await Update.create(
         user_id=peer.owner_id,
@@ -1118,13 +1120,14 @@ async def update_read_history_inbox(peer: Peer, max_id: int, unread_count: int) 
         chats=chats_and_channels,
     )
 
-    await SessionManager.send(updates, peer.owner_id)
+    if broadcast:
+        await SessionManager.send(updates, peer.owner_id)
 
     return pts, updates
 
 
 async def update_read_history_inbox_channel(
-        user: User | int, channel_id: int, max_id: int, unread_count: int,
+        user: User | int, channel_id: int, max_id: int, unread_count: int, *, broadcast: bool = True,
 ) -> Updates:
     user_id = user.id if isinstance(user, User) else user
 
@@ -1156,7 +1159,8 @@ async def update_read_history_inbox_channel(
         chats=chats_and_channels,
     )
 
-    await SessionManager.send(updates, user_id)
+    if broadcast:
+        await SessionManager.send(updates, user_id)
 
     return updates
 
