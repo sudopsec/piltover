@@ -7,11 +7,10 @@ from piltover.utils.fastrand_shim import xorshift128plus_bytes
 from loguru import logger
 from tortoise import fields, Model
 
-from piltover.config import SYSTEM_CONFIG
 from piltover.db import models
 from piltover.db.enums import CallDiscardReason, CALL_DISCARD_REASON_TO_TL
 from piltover.exceptions import InvalidConstructorException, ErrorRpc
-from piltover.tl import Long, PhoneCallDiscarded, PhoneCallProtocol, PhoneCallDiscardReasonDisconnect, PhoneConnection
+from piltover.tl import Long, PhoneCallDiscarded, PhoneCallProtocol, PhoneCallDiscardReasonDisconnect
 from piltover.tl.base import PhoneCall as TLPhoneCallBase
 from piltover.tl.to_format import PhoneCallToFormat
 
@@ -87,15 +86,5 @@ class PhoneCall(Model):
             g_b=self.g_b,
             key_fingerprint=self.key_fp,
             protocol=protocol,
-            connections=[
-                PhoneConnection(
-                    tcp=False,
-                    id=111,
-                    ip=SYSTEM_CONFIG.group_call_sfu.public_ip,
-                    ipv6="::1",
-                    port=22345,
-                    peer_tag=b"0123456789abcdef",
-                ),
-            ],
             start_date=int(self.started_at.timestamp()) if self.started_at else None,
         )

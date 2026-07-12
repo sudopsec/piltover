@@ -19,7 +19,7 @@ from piltover.app.handlers import register_handlers
 from piltover.app.utils.app_create_system_data import create_system_data
 from piltover.app.utils.config_helper import make_broker_from_config, make_message_broker_from_config
 from piltover.cache import Cache
-from piltover.config import TORTOISE_ORM, GATEWAY_CONFIG, SYSTEM_CONFIG, APP_CONFIG
+from piltover.config import TORTOISE_ORM, GATEWAY_CONFIG, SYSTEM_CONFIG
 from piltover.gateway import Gateway
 from piltover.scheduler import OrmDatabaseScheduleSource
 from piltover.session import SessionManager
@@ -159,20 +159,6 @@ class PiltoverApp:
         scheduler_task = self._run_in_memory_scheduler()
 
         logger.success(f"Running on {self._host}:{self._port}")
-
-        loopback_dc_hosts = {
-            address.host
-            for dc in APP_CONFIG.dc_list
-            for address in dc.addresses
-            if address.host in ("127.0.0.1", "localhost", "::1")
-        }
-        if loopback_dc_hosts and self._host in ("0.0.0.0", "::", "::0"):
-            logger.warning(
-                "app.toml dc_list uses loopback ({hosts}) but gateway listens on all interfaces. "
-                "Remote clients will be redirected to their own localhost after help.getConfig and "
-                "will never reach this server. Set dc_list addresses to your server's public IP or domain.",
-                hosts=", ".join(sorted(loopback_dc_hosts)),
-            )
 
         monitor = None
         if SYSTEM_CONFIG.debug_enable_aiomonitor:

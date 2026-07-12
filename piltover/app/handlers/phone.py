@@ -67,6 +67,10 @@ CALL_CONFIG = json.dumps({
     "bad_call_rating": True,
     "use_ios_vpio_agc": False,
     "use_tcp": False,
+    "rtc_servers": [
+        {"host": "stun.l.google.com", "port": 19302, "turn": False, "stun": True},
+        {"host": "stun1.l.google.com", "port": 19302, "turn": False, "stun": True},
+    ],
     "audio_medium_fec_bitrate": 20000,
     "audio_medium_fec_multiplier": 0.1,
     "audio_strong_fec_bitrate": 7000
