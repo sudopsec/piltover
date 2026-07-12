@@ -253,16 +253,22 @@ def allocate_random_ssrc() -> int:
     return random.randint(1_000_000, 9_999_999)
 
 
-async def ensure_unique_ssrc(group_call: GroupCall, ssrc: int | None) -> int:
+async def ensure_unique_ssrc(
+        group_call: GroupCall,
+        ssrc: int | None,
+        *,
+        user_id: int,
+) -> int:
+    taken = GroupCallParticipant.filter(group_call=group_call, left=False).exclude(user_id=user_id)
+
     if ssrc is not None:
-        duplicate = await GroupCallParticipant.filter(group_call=group_call, left=False, source=ssrc).exists()
-        if duplicate:
+        if await taken.filter(source=ssrc).exists():
             raise ErrorRpc(error_code=400, error_message="GROUPCALL_SSRC_DUPLICATE_MUCH")
         return ssrc
 
     for _ in range(10):
         candidate = allocate_random_ssrc()
-        if not await GroupCallParticipant.filter(group_call=group_call, left=False, source=candidate).exists():
+        if not await taken.filter(source=candidate).exists():
             return candidate
     return await allocate_source(group_call)
 
@@ -670,7 +676,7 @@ async def join_group_call(
         raise ErrorRpc(error_code=400, error_message="HASH_INVALID")
 
     muted = resolve_join_muted(muted, group_call)
-    source = await ensure_unique_ssrc(group_call, client_ssrc)
+    source = await ensure_unique_ssrc(group_call, client_ssrc, user_id=user_id)
 
     participant = await GroupCallParticipant.get_or_none(group_call=group_call, user_id=user_id)
     created = False
