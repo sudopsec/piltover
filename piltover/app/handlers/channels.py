@@ -4,7 +4,7 @@ from typing import cast
 
 from loguru import logger
 from tortoise.expressions import Q, Subquery, RawSQL, F
-from tortoise.functions import Max
+from tortoise.functions import Count, Max
 from tortoise.query_utils import Prefetch
 from tortoise.transactions import in_transaction
 
@@ -27,7 +27,7 @@ from piltover.db.models.message_ref import append_channel_min_message_id_to_quer
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc, Unreachable
 from piltover.session import SessionManager
-from piltover.tl import MessageActionChannelCreate, UpdateChannel, Updates, \
+from piltover.tl import MessageActionChannelCreate, UpdateChannel, Updates, MissingInvitee, \
     InputChannelFromMessage, InputChannel, ChannelFull, PhotoEmpty, PeerNotifySettings, MessageActionChatEditTitle, \
     InputMessageID, InputMessageReplyTo, ChannelParticipantsRecent, ChannelParticipantsAdmins, \
     ChannelParticipantsSearch, ChatReactionsAll, ChatReactionsNone, ChatReactionsSome, ReactionEmoji, \
@@ -952,54 +952,102 @@ async def invite_to_channel(request: InviteToChannel, user_id: int) -> InvitedUs
         peer_type, peer_id = Peer.type_and_id_from_input_raise(user_id, input_user, "USER_ID_INVALID")
         if peer_type is not PeerType.USER:
             raise ErrorRpc(error_code=400, error_message="USER_ID_INVALID")
-        user_ids.add(peer_id)
+        if peer_id != user_id:
+            user_ids.add(peer_id)
 
-    peer_user_ids = set(cast(
+    if not user_ids:
+        raise ErrorRpc(error_code=400, error_message="USER_ID_INVALID")
+
+    existing_user_ids = set(cast(
         list[int],
-        await Peer.filter(owner_id=user_id, user_id__in=user_ids).values_list("user_id", flat=True)
+        await User.filter(id__in=user_ids).values_list("id", flat=True),
     ))
-    if peer_user_ids != user_ids:
+    if existing_user_ids != user_ids:
         raise ErrorRpc(error_code=400, error_message="USER_ID_INVALID")
 
     existing_participants = {
         participant.user_id: participant
-        for participant in await ChatParticipant.filter(user_id__in=user_ids, channel_id=channel.id).only("id", "left")
+        for participant in await ChatParticipant.filter(user_id__in=user_ids, channel_id=channel.id).only("id", "left", "user_id")
     }
+
+    current_participants_count = await ChatParticipant.filter(channel_id=channel.id, left=False).count()
+    member_limit = APP_CONFIG.super_group_member_limit
+
+    channels_count_by_user = {
+        uid: count
+        for uid, count in await ChatParticipant.filter(
+            user_id__in=user_ids, channel_id__not_isnull=True, left=False,
+        ).group_by("user_id").annotate(count=Count("id")).values_list("user_id", "count")
+    }
+
+    min_message_id = channel.min_available_id
+    if channel.hidden_prehistory:
+        last_message_id = cast(
+            int | None,
+            cast(
+                object,
+                await MessageRef.filter(
+                    peer__channel=channel,
+                ).order_by("-id").first().values_list("id", flat=True)
+            )
+        )
+        min_message_id = (last_message_id + 1) if last_message_id is not None else None
 
     privacy_rules = await PrivacyRule.has_access_to_bulk(user_ids, user_id, [PrivacyRuleKeyType.CHAT_INVITE])
 
+    missing_invitees: list[MissingInvitee] = []
     added_user_ids: list[int] = []
     participants_to_create: list[ChatParticipant] = []
     participants_to_update: list[ChatParticipant] = []
 
     for input_user in request.users[:100]:
         _, peer_user_id = Peer.type_and_id_from_input_raise(user_id, input_user)
+        if peer_user_id == user_id:
+            continue
         existing_participant = existing_participants.get(peer_user_id)
         if existing_participant and not existing_participant.left:
             continue
         if not privacy_rules[peer_user_id][PrivacyRuleKeyType.CHAT_INVITE]:
-            raise ErrorRpc(error_code=403, error_message="USER_PRIVACY_RESTRICTED")
+            missing_invitees.append(MissingInvitee(user_id=peer_user_id))
+            continue
+        if channels_count_by_user.get(peer_user_id, 0) >= APP_CONFIG.channels_per_user_limit:
+            missing_invitees.append(MissingInvitee(user_id=peer_user_id))
+            continue
+        if current_participants_count + len(added_user_ids) >= member_limit:
+            raise ErrorRpc(error_code=400, error_message="USERS_TOO_MUCH")
 
         added_user_ids.append(peer_user_id)
         if existing_participant is None:
             participants_to_create.append(ChatParticipant(
                 user_id=peer_user_id, channel=channel, chat_channel_id=channel.make_id(), inviter_id=user_id,
-                min_message_id=channel.min_available_id,
+                min_message_id=min_message_id,
             ))
         else:
             existing_participant.left = False
+            existing_participant.inviter_id = user_id
+            existing_participant.min_message_id = min_message_id
             participants_to_update.append(existing_participant)
 
-    if participants_to_create:
-        await ChatParticipant.bulk_create(participants_to_create, ignore_conflicts=True)
-    if participants_to_update:
-        await ChatParticipant.bulk_update(participants_to_update, fields=["left"])
-    await ChatInviteRequest.delete_for_channel(channel, user_id__in=added_user_ids)
+    async with in_transaction():
+        if participants_to_create:
+            await ChatParticipant.bulk_create(participants_to_create, ignore_conflicts=True)
+        if participants_to_update:
+            await ChatParticipant.bulk_update(
+                participants_to_update, fields=["left", "inviter_id", "min_message_id"],
+            )
+        if added_user_ids:
+            await ChatInviteRequest.delete_for_channel(channel, user_id__in=added_user_ids)
+            admin_log_entries = [
+                AdminLogEntry(channel=channel, user_id=added_user_id, action=AdminLogEntryAction.PARTICIPANT_JOIN)
+                for added_user_id in added_user_ids
+            ]
+            await AdminLogEntry.bulk_create(admin_log_entries)
 
-    await SessionManager.subscribe_to_channel(channel.id, added_user_ids)
-
-    for added_user_id in added_user_ids:
-        await upd.update_channel_for_user(channel, added_user_id)
+    if added_user_ids:
+        await SessionManager.subscribe_to_channel(channel.id, added_user_ids)
+        for added_user_id in added_user_ids:
+            await Dialog.create_or_unhide(added_user_id, peer_with_channel)
+            await upd.update_channel_for_user(channel, added_user_id)
 
     return InvitedUsers(
         updates=Updates(
@@ -1009,7 +1057,7 @@ async def invite_to_channel(request: InviteToChannel, user_id: int) -> InvitedUs
             date=int(time()),
             seq=0,
         ),
-        missing_invitees=[],
+        missing_invitees=missing_invitees,
     )
 
 

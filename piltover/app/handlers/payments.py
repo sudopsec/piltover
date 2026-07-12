@@ -2,12 +2,12 @@ from piltover.app.utils import stars_manager as stars
 import piltover.app.utils.updates_manager as upd
 from piltover.db.models import UserStarsBalance
 from piltover.enums import ReqHandlerFlags
-from piltover.tl import StarsTopupOption, TLObjectVector
+from piltover.tl import StarsTopupOption, TLObjectVector, StatsGraphError, StarsAmount, StarsRevenueStatus
 from piltover.tl.functions.payments import (
     GetStarsStatus, GetStarsSubscriptions, GetStarsTransactions, GetStarsTopupOptions,
-    GetPaymentForm, SendPaymentForm, SendStarsForm, ValidateRequestedInfo,
+    GetPaymentForm, SendPaymentForm, SendStarsForm, ValidateRequestedInfo, GetStarsRevenueStats,
 )
-from piltover.tl.types.payments import StarsStatus, PaymentResult, ValidatedRequestedInfo
+from piltover.tl.types.payments import StarsStatus, PaymentResult, ValidatedRequestedInfo, StarsRevenueStats
 from piltover.worker import MessageHandler
 
 handler = MessageHandler("payments")
@@ -55,6 +55,20 @@ async def get_stars_subscriptions(request: GetStarsSubscriptions, user_id: int) 
 @handler.on_request(GetStarsTopupOptions, ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def get_stars_topup_options() -> list[StarsTopupOption]:
     return _TOPUP_OPTIONS
+
+
+@handler.on_request(GetStarsRevenueStats, ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def get_stars_revenue_stats() -> StarsRevenueStats:
+    zero = StarsAmount(amount=0, nanos=0)
+    return StarsRevenueStats(
+        revenue_graph=StatsGraphError(error="no stats"),
+        status=StarsRevenueStatus(
+            current_balance=zero,
+            available_balance=zero,
+            overall_revenue=zero,
+        ),
+        usd_rate=1.0,
+    )
 
 
 @handler.on_request(GetPaymentForm, ReqHandlerFlags.BOT_NOT_ALLOWED)
