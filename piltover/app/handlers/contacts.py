@@ -57,7 +57,8 @@ async def _format_resolved_peer(user_id: int, resolved: Username) -> ResolvedPee
     else:  # pragma: no cover
         raise Unreachable
 
-    await Dialog.get_or_create_hidden(user_id, peer)
+    if resolved.user is None or not resolved.user.bot:
+        await Dialog.get_or_create_hidden(user_id, peer)
 
     return ResolvedPeer(
         peer=peer.to_tl(),

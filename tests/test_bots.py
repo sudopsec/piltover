@@ -6,8 +6,11 @@ from pyrogram.raw.types import UpdateNewMessage, UpdateEditMessage
 from pyrogram.raw.types.messages import BotCallbackAnswer
 from pyrogram.types import Message as PyroMessage, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
+from pyrogram.raw.functions.messages import GetPeerDialogs
+from pyrogram.raw.types import InputDialogPeer
+
 from piltover.db.enums import PeerType
-from piltover.db.models import User, Username, Bot, State, Peer
+from piltover.db.models import User, Username, Bot, State, Peer, Dialog
 from tests.client import TestClient
 
 
@@ -175,6 +178,34 @@ async def test_botfather_mybots_pagination(exit_stack: AsyncExitStack) -> None:
     assert new_message.reply_markup.inline_keyboard[-1][-1].text == "->"
 
     assert new_message.reply_markup == bot_message.reply_markup
+
+
+@pytest.mark.asyncio
+async def test_bot_peer_dialogs_hidden_until_start() -> None:
+    async with TestClient(phone_number="123456789") as client:
+        db_user = await User.get(phone_number="123456789")
+        bot, = await _create_bots(db_user, 1, username_prefix="peer_dialogs_")
+
+        await client.resolve_peer("peer_dialogs_test_0_bot")
+
+        bot_peer = await Peer.get(owner=db_user, user=bot.bot, type=PeerType.USER)
+        assert not await Dialog.filter(owner_id=db_user.id, peer=bot_peer).exists()
+
+        peer_dialogs = await client.invoke(GetPeerDialogs(peers=[
+            InputDialogPeer(peer=await client.resolve_peer("peer_dialogs_test_0_bot")),
+        ]))
+        assert len(peer_dialogs.dialogs) == 0
+
+        await client.send_message("peer_dialogs_test_0_bot", "/start")
+        await client.expect_update(UpdateNewMessage)
+
+        dialog = await Dialog.get(owner_id=db_user.id, peer=bot_peer)
+        assert dialog.visible is True
+
+        peer_dialogs = await client.invoke(GetPeerDialogs(peers=[
+            InputDialogPeer(peer=await client.resolve_peer("peer_dialogs_test_0_bot")),
+        ]))
+        assert len(peer_dialogs.dialogs) == 1
 
 
 @pytest.mark.real_auth

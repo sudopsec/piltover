@@ -250,7 +250,7 @@ async def get_peer_dialogs(request: GetPeerDialogs, user_id: int) -> PeerDialogs
     if peer_channel_ids:
         peers_query |= Q(peer__channel_id__in=peer_channel_ids)
 
-    dialogs = await Dialog.filter(peers_query, owner_id=user_id).select_related("peer")
+    dialogs = await Dialog.filter(peers_query, owner_id=user_id, visible=True).select_related("peer")
     dialogs_tl = await format_dialogs(Dialog, Dialogs, DialogsSlice, user_id, dialogs)
 
     return PeerDialogs(
