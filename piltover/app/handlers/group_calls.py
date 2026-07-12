@@ -319,11 +319,11 @@ async def leave_group_call_handler(request: LeaveGroupCall, user_id: int) -> Upd
         call_update = await upd.group_call_update(chat_or_channel, group_call)
         return _make_updates(chat_or_channel, [call_update])
 
-    upd.spawn_group_call_broadcast(upd.group_call_participants_update_with_call_rpc(
+    await upd.group_call_participants_update_with_call_rpc(
         chat_or_channel, group_call, [participant],
         exclude_user_ids=[user_id], just_joined=False,
         participant_versioned=False,
-    ))
+    )
     participants_update = await upd.group_call_participants_update(
         chat_or_channel, group_call, [participant],
         self_user_id=user_id, broadcast=False, participant_versioned=False,

@@ -2265,19 +2265,6 @@ async def _fresh_group_call_chat_tl(chat_or_channel: Chat | Channel):
     return await chat_or_channel.to_tl()
 
 
-def spawn_group_call_broadcast(coro) -> None:
-    task = asyncio.create_task(coro)
-
-    def _on_done(t: asyncio.Task) -> None:
-        if t.cancelled():
-            return
-        exc = t.exception()
-        if exc is not None:
-            logger.opt(exception=exc).error("Group call broadcast failed")
-
-    task.add_done_callback(_on_done)
-
-
 async def _group_call_member_user_ids(chat_or_channel: Chat | Channel) -> list[int]:
     if isinstance(chat_or_channel, Chat):
         query = ChatParticipant.filter(chat=chat_or_channel, left=False)
@@ -2329,7 +2316,7 @@ async def _send_group_call_live_updates(
                     participant_tl,
                 )
 
-    asyncio.create_task(SessionManager.send(updates, user_id=recipients))
+    await SessionManager.send(updates, user_id=recipients)
 
 
 def _make_group_call_participants_updates(
@@ -2475,7 +2462,7 @@ async def group_call_update_for_participants(
         ],
         chats=[],
     )
-    asyncio.create_task(SessionManager.send(updates, user_id=recipients))
+    await SessionManager.send(updates, user_id=recipients)
     return updates
 
 
@@ -2493,7 +2480,7 @@ async def group_call_update(chat_or_channel: Chat | Channel, group_call) -> Upda
         chats=[await _group_call_chat_tl(chat_or_channel)],
     )
     recipients = await _group_call_recipients(chat_or_channel)
-    asyncio.create_task(SessionManager.send(updates, user_id=recipients))
+    await SessionManager.send(updates, user_id=recipients)
     return updates
 
 
@@ -2556,7 +2543,7 @@ async def group_call_participants_update(
             list(exclude_user_ids or ()),
             to_participants_only,
         )
-        spawn_group_call_broadcast(_broadcast_group_call_participants(
+        await _broadcast_group_call_participants(
             chat_or_channel, group_call, participants,
             exclude_user_ids=exclude_user_ids,
             to_participants_only=to_participants_only,
@@ -2564,7 +2551,7 @@ async def group_call_participants_update(
             users_tl=users_tl,
             include_chat=just_joined,
             participant_versioned=participant_versioned,
-        ))
+        )
 
     return await _build_group_call_participants_updates(
         chat_or_channel, group_call, participants,
@@ -2604,7 +2591,7 @@ async def group_call_participants_update_with_call(
         call=await group_call.to_tl(participants_count=participants_count),
     )
 
-    spawn_group_call_broadcast(_broadcast_group_call_participants(
+    await _broadcast_group_call_participants(
         chat_or_channel, group_call, participants,
         exclude_user_ids=exclude_user_ids,
         just_joined=just_joined,
@@ -2612,7 +2599,7 @@ async def group_call_participants_update_with_call(
         include_chat=just_joined,
         participant_versioned=participant_versioned,
         extra_updates=[call_update],
-    ))
+    )
 
     return await _build_group_call_participants_updates(
         chat_or_channel, group_call, participants,

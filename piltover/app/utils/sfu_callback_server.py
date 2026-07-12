@@ -56,7 +56,7 @@ async def _handle_connection(reader: asyncio.StreamReader, writer: asyncio.Strea
             data = json.loads(body.decode("utf-8") or "{}")
             room_id = int(data["roomId"])
             peer_id = int(data["peerId"])
-            asyncio.create_task(handle_sfu_speaking_callback(room_id, peer_id))
+            await handle_sfu_speaking_callback(room_id, peer_id)
             writer.write(_http_response(200, {"success": True}))
         else:
             writer.write(_http_response(404))

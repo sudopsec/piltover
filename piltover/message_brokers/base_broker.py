@@ -36,24 +36,20 @@ def _deliver_updates_to_internal_push(obj: TLObject) -> bool:
     return isinstance(obj, (UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection))
 
 
-def _updates_need_immediate_flush(obj: TLObject) -> bool:
-    from piltover.tl import (
-        UpdateGroupCall, UpdateGroupCallConnection, UpdateGroupCallParticipants,
-        UpdatePhoneCall, UpdatePhoneCallSignalingData,
-    )
+def _unwrap_updates_obj(obj: TLObject) -> TLObject:
+    if isinstance(obj, ObjectWithLayerRequirement):
+        return obj.object
+    return obj
 
-    if isinstance(obj, Updates):
-        return any(
-            isinstance(update, (
-                UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection,
-                UpdatePhoneCall, UpdatePhoneCallSignalingData,
-            ))
-            for update in obj.updates
-        )
-    return isinstance(obj, (
-        UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection,
-        UpdatePhoneCall, UpdatePhoneCallSignalingData,
-    ))
+
+def _updates_need_immediate_flush(obj: TLObject) -> bool:
+    """Push Updates must reach the client before the handler returns."""
+    from piltover.tl import Updates as TLUpdates
+
+    obj = _unwrap_updates_obj(obj)
+    if isinstance(obj, TLUpdates):
+        return True
+    return False
 
 
 class BrokerType(Flag):
@@ -259,12 +255,8 @@ class BaseMessageBroker(ABC):
             if session.auth_id in ignore_auths or (session.is_internal_push and not deliver_to_internal_push):
                 return
             try:
-                deliver_obj = message.obj
-                if isinstance(deliver_obj, ObjectWithLayerRequirement):
-                    deliver_obj = deliver_obj.object
-                from piltover.tl import Updates as TLUpdates
                 await session.enqueue(message.obj, False)
-                if _updates_need_immediate_flush(deliver_obj):
+                if _updates_need_immediate_flush(message.obj):
                     await session.flush_outbound()
             except Exception as e:
                 logger.opt(exception=e).error("Error occurred while sending message")
@@ -272,43 +264,26 @@ class BaseMessageBroker(ABC):
         if send_to:
             from piltover.tl import Updates as TLUpdates
 
-            obj = message.obj
-            is_updates_push = isinstance(obj, TLUpdates) or (
-                isinstance(obj, ObjectWithLayerRequirement) and isinstance(obj.object, TLUpdates)
+            obj = _unwrap_updates_obj(message.obj)
+            is_updates_push = isinstance(obj, TLUpdates)
+            sessions = list(send_to)
+            sem = _push_deliver_semaphore()
+
+            async def _deliver_limited(session: Session) -> None:
+                async with sem:
+                    await _deliver(session)
+
+            results = await asyncio.gather(
+                *(_deliver_limited(session) for session in sessions),
+                return_exceptions=True,
             )
-            if is_updates_push:
-                sessions = list(send_to)
-                sem = _push_deliver_semaphore()
-
-                async def _deliver_all() -> None:
-                    async def _deliver_limited(session: Session) -> None:
-                        async with sem:
-                            await _deliver(session)
-
-                    results = await asyncio.gather(
-                        *(_deliver_limited(session) for session in sessions),
-                        return_exceptions=True,
+            for session, result in zip(sessions, results):
+                if isinstance(result, Exception):
+                    logger.opt(exception=result).error(
+                        "Push deliver failed for user {user_id} session {session_id}",
+                        user_id=session.user_id,
+                        session_id=session.session_id,
                     )
-                    for session, result in zip(sessions, results):
-                        if isinstance(result, Exception):
-                            logger.opt(exception=result).error(
-                                "Push deliver failed for user {user_id} session {session_id}",
-                                user_id=session.user_id,
-                                session_id=session.session_id,
-                            )
-
-                task = asyncio.create_task(_deliver_all())
-
-                def _on_done(t: asyncio.Task) -> None:
-                    if t.cancelled():
-                        return
-                    exc = t.exception()
-                    if exc is not None:
-                        logger.opt(exception=exc).error("Push deliver batch failed")
-
-                task.add_done_callback(_on_done)
-            else:
-                await asyncio.gather(*(_deliver(session) for session in send_to))
 
     async def _process_channels_subscribe(self, message: ChannelSubscribe) -> None:
         logger.trace(f"Subscribing/unsubscribing {len(message.user_ids)} to {len(message.channel_ids)} channels...")
@@ -353,6 +328,7 @@ class BaseMessageBroker(ABC):
         for session in send_to:
             try:
                 await session.enqueue(to_send, False)
+                await session.flush_outbound()
             except Exception as e:
                 logger.opt(exception=e).error("Error occurred while sending internal push")
 
