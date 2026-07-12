@@ -31,9 +31,8 @@ def _get_api_endpoint(provider: Literal["klipy"], search: bool) -> str | None:
     return None
 
 
-def _empty(inline_query: InlineQuery) -> tuple[InlineQueryResult, list]:
+def _empty() -> tuple[InlineQueryResult, list]:
     result = InlineQueryResult(
-        query=inline_query,
         next_offset=None,
         cache_time=60 * 60,
         cache_until=datetime.now(UTC) + timedelta(hours=1),
@@ -96,14 +95,14 @@ async def gif_inline_query_handler(
 ) -> tuple[InlineQueryResult, list[InlineQueryResultItem]] | None:
     if APP_CONFIG.gifs is None:
         logger.warning("Gif provider is not configured!")
-        return _empty(inline_query)
+        return _empty()
 
     storage = request_ctx.get().storage
 
     endpoint = _get_api_endpoint(APP_CONFIG.gifs.provider, bool(inline_query.query.strip()))
     if endpoint is None:
         logger.warning("Unknown gif provider or provider api key is not set!")
-        return _empty(inline_query)
+        return _empty()
 
     params = {
         "key": APP_CONFIG.gifs.api_key,
@@ -122,12 +121,12 @@ async def gif_inline_query_handler(
         if resp.status_code >= 400:
             logger.warning(f"Failed to get gifs, response code is {resp.status_code}!")
             logger.trace(resp.json())
-            return _empty(inline_query)
+            return _empty()
 
         data = resp.json()
 
         if not data["results"]:
-            return _empty(inline_query)
+            return _empty()
 
         next_offset = str(data["next"]) if data["next"] else None
         coros = []
