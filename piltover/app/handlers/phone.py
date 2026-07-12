@@ -61,12 +61,12 @@ CALL_CONFIG = json.dumps({
     "audio_bitrate_step_decr": 1000,
     "use_system_ns": True,
     "use_system_aec": True,
-    "force_tcp": True,
+    "force_tcp": False,
     "jitter_initial_delay_60": 2,
     "adsp_good_impls": "(Qualcomm Fluence)",
     "bad_call_rating": True,
     "use_ios_vpio_agc": False,
-    "use_tcp": True,
+    "use_tcp": False,
     "audio_medium_fec_bitrate": 20000,
     "audio_medium_fec_multiplier": 0.1,
     "audio_strong_fec_bitrate": 7000
@@ -314,10 +314,12 @@ async def send_signaling_data(request: SendSignalingData, user: User) -> bool:
     ctx = request_ctx.get()
     call = await PhoneCall.get_or_none(
         Q(from_user=user, from_sess_id=ctx.auth_id) | Q(to_user=user, to_sess_id=ctx.auth_id),
-        id=request.peer.id, access_hash=request.peer.access_hash, discard_reason__isnull=True,
+        id=request.peer.id, access_hash=request.peer.access_hash,
     )
     if call is None:
         raise ErrorRpc(error_code=400, error_message="CALL_PEER_INVALID")
+    if call.discard_reason is not None:
+        return True
 
     if user.id == call.from_user_id:
         session_id = call.to_sess_id

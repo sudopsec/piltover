@@ -2188,7 +2188,7 @@ async def phone_call_update(user_id: int, call: PhoneCall, sessions: list[int] |
 
     await SessionManager.send(
         updates,
-        user_id=user_id if sessions is not None else None,
+        user_id=user_id if sessions is None else None,
         auth_id=sessions,
     )
 

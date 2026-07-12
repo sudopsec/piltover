@@ -7,6 +7,7 @@ from piltover.utils.fastrand_shim import xorshift128plus_bytes
 from loguru import logger
 from tortoise import fields, Model
 
+from piltover.config import SYSTEM_CONFIG
 from piltover.db import models
 from piltover.db.enums import CallDiscardReason, CALL_DISCARD_REASON_TO_TL
 from piltover.exceptions import InvalidConstructorException, ErrorRpc
@@ -87,21 +88,10 @@ class PhoneCall(Model):
             key_fingerprint=self.key_fp,
             protocol=protocol,
             connections=[
-                # TODO: support webrtc stun/turn servers
-                # PhoneConnectionWebrtc(
-                #     id=1,
-                #     ip="192.168.0.111",
-                #     ipv6="::1",
-                #     port=12346,
-                #     username="test",
-                #     password="test",
-                #     turn=True,
-                #     stun=True,
-                # ),
                 PhoneConnection(
                     tcp=False,
                     id=111,
-                    ip="192.168.0.111",
+                    ip=SYSTEM_CONFIG.group_call_sfu.public_ip,
                     ipv6="::1",
                     port=22345,
                     peer_tag=b"0123456789abcdef",

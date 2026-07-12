@@ -36,6 +36,26 @@ def _deliver_updates_to_internal_push(obj: TLObject) -> bool:
     return isinstance(obj, (UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection))
 
 
+def _updates_need_immediate_flush(obj: TLObject) -> bool:
+    from piltover.tl import (
+        UpdateGroupCall, UpdateGroupCallConnection, UpdateGroupCallParticipants,
+        UpdatePhoneCall, UpdatePhoneCallSignalingData,
+    )
+
+    if isinstance(obj, Updates):
+        return any(
+            isinstance(update, (
+                UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection,
+                UpdatePhoneCall, UpdatePhoneCallSignalingData,
+            ))
+            for update in obj.updates
+        )
+    return isinstance(obj, (
+        UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection,
+        UpdatePhoneCall, UpdatePhoneCallSignalingData,
+    ))
+
+
 class BrokerType(Flag):
     READ = 1 << 0
     WRITE = 1 << 1
@@ -243,20 +263,9 @@ class BaseMessageBroker(ABC):
                 if isinstance(deliver_obj, ObjectWithLayerRequirement):
                     deliver_obj = deliver_obj.object
                 from piltover.tl import Updates as TLUpdates
-                is_group_call_push = isinstance(deliver_obj, TLUpdates) and any(
-                    update.__class__.__name__ in (
-                        "UpdateGroupCallParticipants", "UpdateGroupCall", "UpdateGroupCallConnection",
-                    )
-                    for update in deliver_obj.updates
-                )
                 await session.enqueue(message.obj, False)
-                if is_group_call_push:
+                if _updates_need_immediate_flush(deliver_obj):
                     await session.flush_outbound()
-                    logger.info(
-                        "GroupCall deliver done user={} session={}",
-                        session.user_id,
-                        session.session_id,
-                    )
             except Exception as e:
                 logger.opt(exception=e).error("Error occurred while sending message")
 
