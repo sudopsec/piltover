@@ -183,7 +183,7 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
             select_related: tuple[str, ...] | None = None,
     ) -> Peer:
         chat_id = models.Chat.norm_id(chat_id)
-        query = Q(owner_id=user_id, chat_id=chat_id, type=PeerType.CHAT, chat__deleted=False)
+        query = Q(owner_id=user_id, chat_id=chat_id, chat__deleted=False)
         if not allow_migrated:
             query &= Q(chat__migrated=False)
 
@@ -246,7 +246,7 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
                 or (isinstance(input_peer, (InputPeerUser, InputUser)) and input_peer.user_id == user_id):
             if peer_types is not None and PeerType.SELF not in peer_types:
                 return None
-            return Peer.get(owner_id=user_id, type=PeerType.SELF, user_id=user_id)
+            return Peer.get(owner_id=user_id, user_id=user_id)
 
         if isinstance(input_peer, (InputPeerUser, InputUser)):
             if peer_types is not None and PeerType.USER not in peer_types:
@@ -353,9 +353,7 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
             opposite_peer.owner = target_user
             return [opposite_peer]
         elif self.type is PeerType.CHAT:
-            return await Peer.filter(
-                type=PeerType.CHAT, owner_id__not=self.owner_id, chat_id=self.chat_id,
-            )
+            return await Peer.filter(owner_id__not=self.owner_id, chat_id=self.chat_id)
 
         return []
 
