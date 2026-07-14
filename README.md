@@ -293,6 +293,6 @@ backend):
 
 This project is licensed under the GNU Affero General Public License v3.0.
 
-It was originally forked from [RuslanUC/piltover](https://github.com/RuslanUC/piltover), which is licensed under
+It was originally forked from [DavideGalilei/piltover](https://github.com/DavideGalilei/piltover), which is licensed under
 the MIT License. Portions of the original code remain under MIT;
 see LICENSE.MIT for details.
