@@ -99,15 +99,21 @@ async def delete_channel_admin(channel: Channel) -> None:
 
 async def admin_delete_bot(bot_user: User) -> None:
     from piltover.app.utils.admin_delete_user import save_deleted_account_snapshot
+    from piltover.app.utils.admin_sessions import kick_all_user_sessions
     from piltover.db.models import Bot, State, Username
 
     await save_deleted_account_snapshot(bot_user)
-    await Bot.filter(bot_id=bot_user.id).delete()
-    await Username.filter(user_id=bot_user.id).delete()
-    await State.filter(user_id=bot_user.id).delete()
+
     bot_user.deleted = True
     bot_user.first_name = "Deleted Bot"
     bot_user.last_name = None
     await bot_user.save(update_fields=["deleted", "first_name", "last_name", "version"])
     await bot_user.inc_version()
-    await upd.update_user(bot_user)
+
+    if await State.filter(user_id=bot_user.id).exists():
+        await upd.update_user(bot_user)
+
+    await kick_all_user_sessions(bot_user.id)
+    await Bot.filter(bot_id=bot_user.id).delete()
+    await Username.filter(user_id=bot_user.id).delete()
+    await State.filter(user_id=bot_user.id).delete()

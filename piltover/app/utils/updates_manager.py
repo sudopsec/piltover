@@ -900,6 +900,8 @@ async def update_user(user: User) -> None:
 
     # for peer in await Peer.filter(Q(user=user) | (Q(owner=user) & Q(type=PeerType.SELF))).select_related("owner"):
     for peer in await Peer.filter(owner_id=user.id, user_id=user.id):
+        if not await State.filter(user_id=peer.owner_id).exists():
+            continue
         pts = await State.add_pts(peer.owner_id, 1)
 
         updates_to_create.append(
