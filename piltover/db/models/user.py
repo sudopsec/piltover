@@ -50,6 +50,7 @@ class User(Model):
     read_dates_private: bool = fields.BooleanField(default=False)
     verified: bool = fields.BooleanField(default=False)
     admin: bool = fields.BooleanField(default=False)
+    spam_blocked: bool = fields.BooleanField(default=False)
     version: int = fields.IntField(default=0)
 
     accent_color_id: int | None

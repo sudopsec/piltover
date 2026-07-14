@@ -452,12 +452,15 @@ async def _create_builtin_bots(bots: list[tuple[str, str]]) -> None:
 
         bot = await User.get_or_none(username__username=bot_username, system=True)
         if bot is None:
-            bot = await User.create(phone_number=None, first_name=bot_name, bot=True, system=True)
+            bot = await User.create(
+                phone_number=None, first_name=bot_name, bot=True, system=True, verified=True,
+            )
         else:
             bot.phone_number = None
             bot.first_name = bot_name
             bot.bot = bot.system = True
-            await bot.save(update_fields=["phone_number", "first_name", "bot", "system"])
+            bot.verified = True
+            await bot.save(update_fields=["phone_number", "first_name", "bot", "system", "verified"])
 
         await Username.filter(Q(user=bot) | Q(username=bot_username)).delete()
         await Username.create(user=bot, username=bot_username)
@@ -819,6 +822,7 @@ async def create_system_data(
             ("typetestbot", "Type Test Bot"),
             ("verifybot", "Verify Bot"),
             ("admin", "Admin"),
+            ("spambot", "Spam Info Bot"),
         ])
 
     auth_countries_file = cast(Path, args.auth_countries_file)

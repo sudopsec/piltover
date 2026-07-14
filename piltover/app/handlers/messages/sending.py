@@ -194,6 +194,9 @@ async def send_message_internal(
      `user` MUST have at least `id` and `bot` prefetched;
      `peer.user` must have `username` prefetched;
     """
+    if opposite and not user.bot:
+        await _check_spam_blocked(user, peer)
+
     if opposite and peer.type is PeerType.USER and peer.user.bot:
         from piltover.app.utils.admin_access import ensure_admin_bot_access
         await ensure_admin_bot_access(user.id, await peer.user.get_raw_username())
@@ -445,6 +448,11 @@ def _check_disallow_send_to_bot(user: User, peer: Peer) -> None:
         raise ErrorRpc(error_code=400, error_message="USER_IS_BOT")
 
 
+async def _check_spam_blocked(user: User, peer: Peer) -> None:
+    from piltover.app.utils.spam_block import check_user_spam_blocked
+    await check_user_spam_blocked(user, peer)
+
+
 async def _check_channel_slowmode(channel: Channel, participant: ChatParticipant | None, user_id: int) -> None:
     if not channel.slowmode_seconds:
         return
@@ -493,7 +501,7 @@ async def process_send_as(send_as: TLInputPeerBase | None, user: User | int) -> 
 @handler.on_request(SendMessage_176, ReqHandlerFlags.DONT_FETCH_USER)
 @handler.on_request(SendMessage, ReqHandlerFlags.DONT_FETCH_USER)
 async def send_message(request: SendMessage, user_id: int):
-    user = await User.get(id=user_id).only("id", "bot", "first_name")
+    user = await User.get(id=user_id).only("id", "bot", "first_name", "spam_blocked")
 
     if request.schedule_date and user.bot:
         raise ErrorRpc(error_code=400, error_message="SCHEDULE_BOT_NOT_ALLOWED")
@@ -514,6 +522,7 @@ async def send_message(request: SendMessage, user_id: int):
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
     _check_disallow_send_to_bot(user, peer)
+    await _check_spam_blocked(user, peer)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1087,7 +1096,7 @@ async def _get_input_media_banned_rights(user_id: int, media: TLInputMediaBase) 
 @handler.on_request(SendMedia_176, ReqHandlerFlags.DONT_FETCH_USER)
 @handler.on_request(SendMedia, ReqHandlerFlags.DONT_FETCH_USER)
 async def send_media(request: SendMedia | SendMedia_148 | SendMedia_176, user_id: int):
-    user = await User.get(id=user_id).only("id", "bot", "first_name", "phone_number")
+    user = await User.get(id=user_id).only("id", "bot", "first_name", "phone_number", "spam_blocked")
 
     if request.schedule_date and user.bot:
         raise ErrorRpc(error_code=400, error_message="SCHEDULE_BOT_NOT_ALLOWED")
@@ -1109,6 +1118,7 @@ async def send_media(request: SendMedia | SendMedia_148 | SendMedia_176, user_id
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
     _check_disallow_send_to_bot(user, peer)
+    await _check_spam_blocked(user, peer)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1231,6 +1241,7 @@ async def forward_messages(
             raise ErrorRpc(error_code=400, error_message="SLOWMODE_MULTI_MSGS_DISABLED")
 
     _check_disallow_send_to_bot(user, to_peer)
+    await _check_spam_blocked(user, to_peer)
     _check_we_blocked_user(to_peer)
     await _check_bot_blocked(user, to_peer)
 
@@ -1407,7 +1418,7 @@ async def upload_media(request: UploadMedia | UploadMedia_133, user_id: int):
 @handler.on_request(SendMultiMedia_148, ReqHandlerFlags.DONT_FETCH_USER)
 @handler.on_request(SendMultiMedia, ReqHandlerFlags.DONT_FETCH_USER)
 async def send_multi_media(request: SendMultiMedia | SendMultiMedia_148 | SendMultiMedia_176, user_id: int):
-    user = await User.get(id=user_id).only("id", "bot", "first_name")
+    user = await User.get(id=user_id).only("id", "bot", "first_name", "spam_blocked")
 
     # TODO: return existing messages by random_id
 
@@ -1426,6 +1437,7 @@ async def send_multi_media(request: SendMultiMedia | SendMultiMedia_148 | SendMu
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
     _check_disallow_send_to_bot(user, peer)
+    await _check_spam_blocked(user, peer)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1607,9 +1619,10 @@ async def send_inline_bot_result(request: SendInlineBotResult, user_id: int) -> 
         if peer.type is PeerType.CHANNEL:
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
-    user = await User.get(id=user_id).only("id", "first_name", "bot")
+    user = await User.get(id=user_id).only("id", "first_name", "bot", "spam_blocked")
 
     _check_disallow_send_to_bot(user, peer)
+    await _check_spam_blocked(user, peer)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1733,7 +1746,7 @@ async def start_bot(request: StartBot, user_id: int):
     if not request.random_id:
         raise ErrorRpc(error_code=400, error_message="RANDOM_ID_EMPTY")
 
-    user = await User.get(id=user_id).only("id", "bot", "first_name")
+    user = await User.get(id=user_id).only("id", "bot", "first_name", "spam_blocked")
 
     bot_peer = await Peer.query_from_input_user_or_raise(
         user_id, request.bot, error_message="BOT_INVALID"

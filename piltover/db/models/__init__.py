@@ -102,3 +102,4 @@ from .user_stars_balance import UserStarsBalance
 from .stars_transaction import StarsTransaction
 from .stars_payment_form import StarsPaymentForm
 from .bot_precheckout_query import BotPrecheckoutQuery
+from .admin_bot_state import AdminBotUserState

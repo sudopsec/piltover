@@ -250,6 +250,58 @@ async def grant_stars(
     return balance
 
 
+async def set_stars_balance(
+        user_id: int,
+        amount: int,
+        *,
+        title: str = "Admin adjustment",
+        description: str | None = None,
+) -> UserStarsBalance:
+    if amount < 0:
+        raise ErrorRpc(error_code=400, error_message="STARS_AMOUNT_INVALID")
+
+    stars_bot_id = await get_stars_bot_user_id()
+    async with in_transaction():
+        balance = await UserStarsBalance.filter(user_id=user_id).select_for_update().first()
+        if balance is None:
+            balance = await UserStarsBalance.create(user_id=user_id, amount=0, nanos=0)
+
+        current = balance.amount
+        if current == amount:
+            return balance
+
+        if amount > current:
+            balance.amount = amount
+            await balance.save(update_fields=["amount"])
+            await StarsTransaction.create(
+                transaction_id=StarsTransaction.gen_id(),
+                user_id=user_id,
+                stars_amount=amount - current,
+                inbound=True,
+                date=int(time()),
+                peer_type=StarsTransactionPeerType.PEER,
+                peer_user_id=stars_bot_id,
+                title=title,
+                description=description or f"Balance set to {amount} stars",
+            )
+        else:
+            balance.amount = amount
+            await balance.save(update_fields=["amount"])
+            await StarsTransaction.create(
+                transaction_id=StarsTransaction.gen_id(),
+                user_id=user_id,
+                stars_amount=current - amount,
+                inbound=False,
+                date=int(time()),
+                peer_type=StarsTransactionPeerType.PEER,
+                peer_user_id=stars_bot_id,
+                title=title,
+                description=description or f"Balance set to {amount} stars",
+            )
+
+    return balance
+
+
 async def spend_stars(
         user_id: int,
         stars: int,

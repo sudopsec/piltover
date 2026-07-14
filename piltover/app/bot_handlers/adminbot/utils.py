@@ -23,6 +23,8 @@ def user_badges(user: User) -> str:
         parts.append("🤖")
     if user.system:
         parts.append("⚙")
+    if getattr(user, "spam_blocked", False):
+        parts.append("🚫")
     return "".join(parts)
 
 

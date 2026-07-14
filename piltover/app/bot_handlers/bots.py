@@ -13,6 +13,7 @@ from piltover.app.bot_handlers.verifybot import VerifyBotInteractionHandler
 from piltover.app.bot_handlers.verifybot.callback_handler import verifybot_callback_query_handler
 from piltover.app.bot_handlers.adminbot import AdminBotInteractionHandler
 from piltover.app.bot_handlers.adminbot.callback_handler import adminbot_callback_query_handler
+from piltover.app.bot_handlers.spambot import SpamBotInteractionHandler
 from piltover.app.utils.admin_access import ensure_admin_bot_access
 from piltover.app.bot_handlers.stars_pay import StarsPayBotInteractionHandler
 from piltover.app.bot_handlers.stars_pay.callback_handler import stars_pay_callback_query_handler
@@ -45,6 +46,7 @@ HANDLERS: dict[str, BotInteractionHandler] = {
     "typetestbot": TypeTestBotInteractionHandler(),
     "verifybot": VerifyBotInteractionHandler(),
     "admin": AdminBotInteractionHandler(),
+    "spambot": SpamBotInteractionHandler(),
 }
 CALLBACK_QUERY_HANDLERS: dict[str, Callable[[Peer, MessageRef, bytes], Awaitable[BotCallbackAnswer | None]]] = {
     "botfather": botfather_callback_query_handler,

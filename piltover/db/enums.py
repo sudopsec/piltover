@@ -322,6 +322,10 @@ BOTFATHER_STATE_TO_COMMAND_NAME = {
 }
 
 
+class AdminBotState(IntEnum):
+    WAIT_STARS_AMOUNT = 1
+
+
 class StickersBotState(IntEnum):
     NEWPACK_WAIT_NAME = 1
     NEWPACK_WAIT_IMAGE = 2
