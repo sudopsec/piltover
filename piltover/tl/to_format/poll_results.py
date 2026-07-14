@@ -4,14 +4,22 @@ from piltover.tl.serialization_context import EMPTY_SERIALIZATION_CONTEXT, Seria
 
 
 class PollResultsToFormat(types.PollResultsToFormatInternal):
+    def _show_solution(self, ctx: SerializationContext) -> bool:
+        if self.solution is None:
+            return False
+        if ctx.values is None or self.id not in ctx.values.poll_answers:
+            return False
+        selected = ctx.values.poll_answers[self.id]
+        return any(result.id in selected and not result.correct for result in self.results)
+
     def _write(self, ctx: SerializationContext) -> bytes:
+        show_solution = self._show_solution(ctx)
         return types.PollResults(
             min=ctx.values is None or self.id not in ctx.values.poll_answers,
             results=self.results,
             total_voters=self.total_voters,
-            # TODO: only show solution if incorrect option was selected
-            solution=self.solution,
-            solution_entities=self.solution_entities,
+            solution=self.solution if show_solution else None,
+            solution_entities=self.solution_entities if show_solution else None,
         ).write(ctx)
 
     def write(self, ctx: SerializationContext = EMPTY_SERIALIZATION_CONTEXT) -> bytes:

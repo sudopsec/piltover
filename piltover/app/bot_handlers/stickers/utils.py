@@ -1,7 +1,13 @@
 from tortoise.expressions import Q
 
+from piltover.app.utils.formatable_text_with_entities import FormatableTextWithEntities
 from piltover.db.models import Peer, Stickerset, MessageRef
 from piltover.tl import KeyboardButtonRow, KeyboardButton, ReplyInlineMarkup, ReplyKeyboardMarkup, ReplyKeyboardHide
+
+
+_text_no_sets, _text_no_sets_entities = FormatableTextWithEntities(
+    "You don't have any sticker sets yet. Use the <c>/newpack</c> command to create a new set first."
+).format()
 
 
 async def get_stickerset_selection_keyboard(user_id: int, emoji: bool | None = False) -> list[KeyboardButtonRow] | None:

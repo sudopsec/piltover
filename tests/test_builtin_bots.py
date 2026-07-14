@@ -58,6 +58,66 @@ async def test_premiumbot_start_and_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_typetestbot_catalog_index() -> None:
+    async with TestClient(phone_number="123456789") as client:
+        bot = await client.get_users("typetestbot")
+
+        await client.send_message(bot.id, "/catalog")
+
+        user_message = await client.expect_update(UpdateNewMessage)
+        bot_message = await client.expect_update(UpdateNewMessage)
+
+        if user_message.message.from_id.user_id != client.me.id:
+            user_message, bot_message = bot_message, user_message
+
+        assert "Message catalog" in bot_message.message.message
+        parsed = await PyroMessage._parse(client, bot_message.message, {}, {})
+        labels = [btn.text for row in parsed.reply_markup.inline_keyboard for btn in row]
+        assert "Regular (14)" in labels
+        assert "Impossible (14)" in labels
+
+
+@pytest.mark.asyncio
+async def test_typetestbot_svc_pin_command() -> None:
+    from pyrogram.raw.types import MessageService as RawMessageService
+    from pyrogram.raw.types import MessageActionPinMessage as RawPin
+
+    async with TestClient(phone_number="123456789") as client:
+        bot = await client.get_users("typetestbot")
+
+        await client.send_message(bot.id, "/svc_pin")
+
+        user_message = await client.expect_update(UpdateNewMessage)
+        bot_message = await client.expect_update(UpdateNewMessage)
+
+        if user_message.message.from_id.user_id != client.me.id:
+            user_message, bot_message = bot_message, user_message
+
+        assert isinstance(bot_message.message, RawMessageService)
+        assert isinstance(bot_message.message.action, RawPin)
+
+
+@pytest.mark.asyncio
+async def test_typetestbot_buy_plain_on_text() -> None:
+    from pyrogram.raw.types import KeyboardButtonBuy as RawKeyboardButtonBuy
+
+    async with TestClient(phone_number="123456789") as client:
+        bot = await client.get_users("typetestbot")
+
+        await client.send_message(bot.id, "/buy_plain")
+
+        user_message = await client.expect_update(UpdateNewMessage)
+        bot_message = await client.expect_update(UpdateNewMessage)
+
+        if user_message.message.from_id.user_id != client.me.id:
+            user_message, bot_message = bot_message, user_message
+
+        assert bot_message.message.media is None
+        assert isinstance(bot_message.message.reply_markup, ReplyInlineMarkup)
+        assert isinstance(bot_message.message.reply_markup.rows[0].buttons[0], RawKeyboardButtonBuy)
+
+
+@pytest.mark.asyncio
 async def test_stars_pay_bot_start_shows_invoice_buttons() -> None:
     async with TestClient(phone_number="123456789") as client:
         stars_pay_bot = await client.get_users("stars_pay")

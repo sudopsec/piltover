@@ -6,7 +6,7 @@ from tortoise.transactions import in_transaction
 
 from piltover.db import models
 from piltover.db.enums import PeerType
-from piltover.exceptions import Unreachable
+from piltover.exceptions import ErrorRpc, Unreachable
 from piltover.tl import DialogFilter, TextWithEntities, DialogFilterChatlist, DialogFilterChatlist_158, \
     DialogFilterChatlist_176, DialogFilterDefault
 from piltover.tl.base import DialogFilter as TLDialogFilterBase, InputPeer as TLInputPeerBase
@@ -107,6 +107,34 @@ class DialogFolder(Model):
         peers_query = Q(user_id__in=user_ids, chat_id__in=chat_ids, channel_id__in=channel_ids, join_type=Q.OR)
         return await models.Peer.filter(peers_query, owner_id=self.owner_id)
 
+    async def _resolve_peers_strict(self, input_peers: list[TLInputPeerBase]) -> list[models.Peer]:
+        if not input_peers:
+            return []
+        peers = await self._fetch_peers(input_peers)
+        if len(peers) != len(input_peers):
+            raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
+        return peers
+
+    async def _validate_filter_peers(
+            self,
+            pinned_peers: list[TLInputPeerBase],
+            include_peers: list[TLInputPeerBase],
+            exclude_peers: list[TLInputPeerBase],
+    ) -> None:
+        pinned = await self._resolve_peers_strict(pinned_peers)
+        include = await self._resolve_peers_strict(include_peers)
+        exclude = await self._resolve_peers_strict(exclude_peers)
+
+        include_ids = {peer.id for peer in include}
+        exclude_ids = {peer.id for peer in exclude}
+        pinned_ids = {peer.id for peer in pinned}
+
+        if include_ids & exclude_ids:
+            raise ErrorRpc(error_code=400, error_message="FILTER_NOT_SUPPORTED")
+
+        if include_ids and pinned_ids - include_ids:
+            raise ErrorRpc(error_code=400, error_message="FILTER_NOT_SUPPORTED")
+
     @staticmethod
     def _diff_peers(
             old_peers: dict[int, models.Peer], new_peers: dict[int, models.Peer],
@@ -152,8 +180,9 @@ class DialogFolder(Model):
         self.exclude_archived = tl_filter.exclude_archived
 
         async with in_transaction():
-            # TODO: validate pinned peers: check if all pinned peers are in this folder
+            await self._validate_filter_peers(
+                tl_filter.pinned_peers, tl_filter.include_peers, tl_filter.exclude_peers,
+            )
             await self._diff_update_peers(tl_filter.pinned_peers, self.pinned_peers)
             await self._diff_update_peers(tl_filter.include_peers, self.include_peers)
-            # TODO: validate excluded peers: check that exclude_peers and include_peers do not intersect
             await self._diff_update_peers(tl_filter.exclude_peers, self.exclude_peers)

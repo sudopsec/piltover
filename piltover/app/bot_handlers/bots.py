@@ -7,6 +7,8 @@ from piltover.app.bot_handlers.interaction_handler import BotInteractionHandler
 from piltover.app.bot_handlers.stars import StarsBotInteractionHandler
 from piltover.app.bot_handlers.stars.callback_handler import stars_callback_query_handler
 from piltover.app.bot_handlers.premiumbot import PremiumBotInteractionHandler
+from piltover.app.bot_handlers.typetestbot import TypeTestBotInteractionHandler
+from piltover.app.bot_handlers.typetestbot.callback_handler import typetestbot_callback_query_handler
 from piltover.app.bot_handlers.stars_pay import StarsPayBotInteractionHandler
 from piltover.app.bot_handlers.stars_pay.callback_handler import stars_pay_callback_query_handler
 from piltover.app.bot_handlers.stickers import StickersBotInteractionHandler
@@ -35,11 +37,13 @@ HANDLERS: dict[str, BotInteractionHandler] = {
     "stars": StarsBotInteractionHandler(),
     "stars_pay": StarsPayBotInteractionHandler(),
     "premiumbot": PremiumBotInteractionHandler(),
+    "typetestbot": TypeTestBotInteractionHandler(),
 }
 CALLBACK_QUERY_HANDLERS: dict[str, Callable[[Peer, MessageRef, bytes], Awaitable[BotCallbackAnswer | None]]] = {
     "botfather": botfather_callback_query_handler,
     "stars": stars_callback_query_handler,
     "stars_pay": stars_pay_callback_query_handler,
+    "typetestbot": typetestbot_callback_query_handler,
 }
 INLINE_QUERY_HANDLERS: dict[str, Callable[[InlineQuery], Awaitable[tuple[BotResults, bool] | None]]] = {
     "gif": gif_inline_query_handler,

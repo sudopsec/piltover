@@ -61,8 +61,8 @@ class ChannelMessageToFormat(types.ChannelMessageToFormatInternal):
                 out=self.common.author_id == ctx.user_id,
                 reply_to=self.common.reply_to,
                 from_id=self.content.from_id,
-                mentioned=False,  # TODO: ?
-                media_unread=False,  # TODO: ?
+                mentioned=mentioned,
+                media_unread=media_unread,
                 ttl_period=self.content.ttl_period,
             )
         else:

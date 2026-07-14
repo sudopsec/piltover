@@ -5,7 +5,7 @@ from time import time
 from piltover.app.utils.utils import telegram_hash
 from piltover.cache import Cache
 from piltover.config import APP_CONFIG, DICE_CONFIG
-from piltover.db.models import AuthCountry, UserReactionsSettings, PeerColorOption, User
+from piltover.db.models import AuthCountry, UserReactionsSettings, PeerColorOption, User, Username
 from piltover.enums import ReqHandlerFlags
 from piltover.tl import Config, DcOption, NearestDc, JsonObject, PremiumSubscriptionOption, JsonNumber, \
     JsonObjectValue, JsonBool, JsonArray, JsonString, ReactionEmoji, ReactionCustomEmoji
@@ -36,6 +36,11 @@ async def get_config(user_id: int | None):
                 default_reaction = ReactionEmoji(emoticon=reaction)
             elif default_custom_emoji_id:
                 default_reaction = ReactionCustomEmoji(document_id=default_custom_emoji_id)
+
+    gif_search_username = None
+    gif_username = await Username.get_or_none(username="gif").select_related("user")
+    if gif_username is not None and gif_username.user is not None and gif_username.user.bot:
+        gif_search_username = "gif"
 
     return Config(
         date=int(time()),
@@ -76,7 +81,7 @@ async def get_config(user_id: int | None):
         preload_featured_stickers=False,
         revoke_pm_inbox=True,
         reactions_default=default_reaction,
-        gif_search_username="gif",  # TODO: only include this if bot exists?
+        gif_search_username=gif_search_username,
     )
 
 

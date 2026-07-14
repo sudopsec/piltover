@@ -20,7 +20,7 @@ from piltover.tl.base import MessageActionInst, ReplyMarkupInst, ReplyMarkup, Me
     MessageEntity as MessageEntityBase
 from piltover.tl.base.internal import MessageToFormatContent as MessageToFormatContentBase
 from piltover.tl.types import PeerUser, MessageActionChatAddUser, MessageActionChatDeleteUser, MessageActionEmpty, \
-    MessageEntityMentionName, PeerChannel
+    MessageEntityMentionName, PeerChannel, MessageActionChatMigrateTo, MessageActionChannelMigrateFrom
 from piltover.tl.types.internal import MessageToFormatContent, MessageToFormatServiceContent
 
 
@@ -629,7 +629,12 @@ class MessageContent(Model):
             data = MessageActionChatDeleteUser.read(BytesIO(self.extra_info))
             user_ids.add(data.user_id)
 
-        # TODO: SERVICE_CHAT_MIGRATE_FROM / SERVICE_CHAT_MIGRATE_TO ?
+        elif self.type is MessageType.SERVICE_CHAT_MIGRATE_TO:
+            data = MessageActionChatMigrateTo.read(BytesIO(self.extra_info))
+            channel_ids.add(models.Channel.norm_id(data.channel_id))
+        elif self.type is MessageType.SERVICE_CHAT_MIGRATE_FROM:
+            data = MessageActionChannelMigrateFrom.read(BytesIO(self.extra_info))
+            chat_ids.add(models.Chat.norm_id(data.chat_id))
 
         if self.entities:
             for entity in self.entities:

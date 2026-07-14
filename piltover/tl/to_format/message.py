@@ -57,8 +57,8 @@ class MessageToFormat(types.MessageToFormatInternal):
                 out=self.ref.out,
                 reply_to=self.ref.reply_to,
                 from_id=self.content.from_id,
-                mentioned=False,  # TODO: ?
-                media_unread=False,  # TODO: ?
+                mentioned=self.ref.mentioned,
+                media_unread=self.ref.media_unread,
                 ttl_period=self.content.ttl_period,
             )
         else:

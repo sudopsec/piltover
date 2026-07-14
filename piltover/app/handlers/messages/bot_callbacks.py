@@ -250,7 +250,13 @@ async def set_inline_bot_results(request: SetInlineBotResults, user_id: int) -> 
     ctx = request_ctx.get()
     cache_time = 300 if request.cache_time <= 0 else request.cache_time
 
-    # TODO: validate request.gallery ?
+    if request.gallery:
+        for result in request.results:
+            if not isinstance(result, (InputBotInlineResultPhoto, InputBotInlineResultDocument)):
+                raise ErrorRpc(error_code=400, error_message="RESULT_TYPE_INVALID")
+            result_type = InlineQueryResultType(result.type_.lower())
+            if result_type not in (InlineQueryResultType.PHOTO, InlineQueryResultType.GIF):
+                raise ErrorRpc(error_code=400, error_message="RESULT_TYPE_INVALID")
 
     async with in_transaction():
         query = await InlineQuery.select_for_update(no_key=True).get_or_none(
@@ -270,13 +276,13 @@ async def set_inline_bot_results(request: SetInlineBotResults, user_id: int) -> 
 
             result_type = InlineQueryResultType(type_)
 
-            # TODO: validate that at least media or text is not empty
-
             item = InlineQueryResultItem(position=len(result_items))
             result_items.append(item)
 
             message = result.send_message
             if isinstance(message, InputBotInlineMessageText):
+                if not message.message:
+                    raise ErrorRpc(error_code=400, error_message="MESSAGE_EMPTY")
                 item.send_message_no_webpage = message.no_webpage
                 item.send_message_invert_media = message.invert_media
                 item.send_message_text = message.message

@@ -111,8 +111,9 @@ async def gif_inline_query_handler(
     }
     if inline_query.query:
         params["q"] = inline_query.query
-    # TODO: validate/verify offset
     if inline_query.offset:
+        if len(inline_query.offset) > 64 or not inline_query.offset.isdigit():
+            return _empty()
         params["pos"] = inline_query.offset
 
     async with AsyncClient() as cl:

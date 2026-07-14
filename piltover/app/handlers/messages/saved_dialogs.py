@@ -2,6 +2,7 @@ from datetime import datetime, UTC
 from typing import cast
 
 from tortoise.expressions import Q
+from tortoise.functions import Max
 
 import piltover.app.utils.updates_manager as upd
 from piltover.app.handlers.messages.dialogs import get_dialogs_internal, format_dialogs
@@ -95,8 +96,13 @@ async def toggle_saved_dialog_pin(request: ToggleSavedDialogPin, user_id: int) -
         return True
 
     if request.pinned:
-        # TODO: set pinned index to Max("pinned_index") + 1 instead of whatever this is
-        dialog.pinned_index = await SavedDialog.filter(owner_id=user_id, pinned_index__not_isnull=True).count()
+        max_index = cast(
+            int | None,
+            await SavedDialog.filter(owner_id=user_id, pinned_index__not_isnull=True).annotate(
+                max_pinned_index=Max("pinned_index"),
+            ).first().values_list("max_pinned_index", flat=True),
+        )
+        dialog.pinned_index = (max_index or -1) + 1
     else:
         dialog.pinned_index = None
 

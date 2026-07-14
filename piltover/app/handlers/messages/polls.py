@@ -1,10 +1,10 @@
 import base64
 
-from tortoise.expressions import Q
+from tortoise.expressions import F, Q
 
 import piltover.app.utils.updates_manager as upd
 from piltover.db.enums import PeerType
-from piltover.db.models import User, Peer, PollAnswer, PollVote, MessageRef
+from piltover.db.models import User, Peer, Poll, PollAnswer, PollVote, MessageRef
 from piltover.db.models.message_ref import append_channel_min_message_id_to_query_maybe
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc
@@ -115,27 +115,35 @@ async def send_vote(request: SendVote, user_id: int) -> Updates:
         if not vote_ids:
             raise ErrorRpc(error_code=400, error_message="OPTION_INVALID")
         await PollVote.filter(id__in=vote_ids).delete()
-        # TODO: increment atomically
+        await Poll.filter(id=message.content.media.poll.id).update(version=F("version") + 1)
         message.content.media.poll.version += 1
-        await message.content.media.poll.save(update_fields=["version"])
         return await upd.update_message_poll(message.content.media.poll, user_id)
+    if len(request.options) > 10:
+        raise ErrorRpc(error_code=400, error_message="OPTIONS_TOO_MUCH")
     if len(request.options) > 1 and not message.content.media.poll.multiple_choices:
         raise ErrorRpc(error_code=400, error_message="OPTIONS_TOO_MUCH")
+    if len(set(request.options)) != len(request.options):
+        raise ErrorRpc(error_code=400, error_message="POLL_OPTION_DUPLICATE")
 
     answer: PollAnswer
     options = {answer.option: answer async for answer in PollAnswer.filter(poll=message.content.media.poll)}
 
     votes_to_create = []
     for option in request.options:
+        if not option or len(option) > 100:
+            raise ErrorRpc(error_code=400, error_message="OPTION_INVALID")
         if option not in options:
             raise ErrorRpc(error_code=400, error_message="OPTION_INVALID")
-        if option in votes_to_create:
-            continue
         votes_to_create.append(PollVote(user_id=user_id, answer=options[option], hidden=peer.type is PeerType.CHANNEL))
 
+    existing_vote_ids = await PollVote.filter(
+        answer__poll=message.content.media.poll, user_id=user_id,
+    ).values_list("id", flat=True)
+    if existing_vote_ids:
+        await PollVote.filter(id__in=existing_vote_ids).delete()
+
     await PollVote.bulk_create(votes_to_create)
-    # TODO: increment atomically
+    await Poll.filter(id=message.content.media.poll.id).update(version=F("version") + 1)
     message.content.media.poll.version += 1
-    await message.content.media.poll.save(update_fields=["version"])
 
     return await upd.update_message_poll(message.content.media.poll, user_id)
