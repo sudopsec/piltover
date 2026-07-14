@@ -1,3 +1,5 @@
+⚠️ Contains probably unsecure ai slop ⚠️
+
 # piltover 🐳
 
 An experimental Telegram server written from scratch in Python. Fork of [RuslanUC/piltover](https://github.com/RuslanUC/piltover).
