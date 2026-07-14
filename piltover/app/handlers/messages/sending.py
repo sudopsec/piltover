@@ -195,7 +195,7 @@ async def send_message_internal(
      `peer.user` must have `username` prefetched;
     """
     if opposite and not user.bot:
-        await _check_spam_blocked(user, peer)
+        await _check_spam_blocked(user, peer, reply_to_message_id=reply_to_message_id)
 
     if opposite and peer.type is PeerType.USER and peer.user.bot:
         from piltover.app.utils.admin_access import ensure_admin_bot_access
@@ -448,9 +448,11 @@ def _check_disallow_send_to_bot(user: User, peer: Peer) -> None:
         raise ErrorRpc(error_code=400, error_message="USER_IS_BOT")
 
 
-async def _check_spam_blocked(user: User, peer: Peer) -> None:
+async def _check_spam_blocked(
+        user: User, peer: Peer, *, reply_to_message_id: int | None = None,
+) -> None:
     from piltover.app.utils.spam_block import check_user_spam_blocked
-    await check_user_spam_blocked(user, peer)
+    await check_user_spam_blocked(user, peer, reply_to_message_id=reply_to_message_id)
 
 
 async def _check_channel_slowmode(channel: Channel, participant: ChatParticipant | None, user_id: int) -> None:
@@ -521,8 +523,10 @@ async def send_message(request: SendMessage, user_id: int):
         if peer.type is PeerType.CHANNEL:
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
+    reply_to_message_id = _resolve_reply_id(request)
+
     _check_disallow_send_to_bot(user, peer)
-    await _check_spam_blocked(user, peer)
+    await _check_spam_blocked(user, peer, reply_to_message_id=reply_to_message_id)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -530,8 +534,6 @@ async def send_message(request: SendMessage, user_id: int):
         raise ErrorRpc(error_code=400, error_message="MESSAGE_EMPTY")
     if len(request.message) > APP_CONFIG.max_message_length:
         raise ErrorRpc(error_code=400, error_message="MESSAGE_TOO_LONG")
-
-    reply_to_message_id = _resolve_reply_id(request)
     top_msg_id = _resolve_top_msg_id(request)
     is_channel_post, post_info, post_signature = await _make_channel_post_info_maybe(peer, user, participant)
     if not is_channel_post:
@@ -1117,8 +1119,10 @@ async def send_media(request: SendMedia | SendMedia_148 | SendMedia_176, user_id
         if peer.type is PeerType.CHANNEL:
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
+    reply_to_message_id = _resolve_reply_id(request)
+
     _check_disallow_send_to_bot(user, peer)
-    await _check_spam_blocked(user, peer)
+    await _check_spam_blocked(user, peer, reply_to_message_id=reply_to_message_id)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1126,7 +1130,6 @@ async def send_media(request: SendMedia | SendMedia_148 | SendMedia_176, user_id
         raise ErrorRpc(error_code=400, error_message="MEDIA_CAPTION_TOO_LONG")
 
     media = await _process_media(user, request.media)
-    reply_to_message_id = _resolve_reply_id(request)
     top_msg_id = _resolve_top_msg_id(request)
     is_channel_post, post_info, post_signature = await _make_channel_post_info_maybe(peer, user, participant)
     if not is_channel_post:
@@ -1436,8 +1439,10 @@ async def send_multi_media(request: SendMultiMedia | SendMultiMedia_148 | SendMu
         if peer.type is PeerType.CHANNEL:
             await _check_channel_slowmode(peer.channel, participant, user_id)
 
+    reply_to_message_id = _resolve_reply_id(request)
+
     _check_disallow_send_to_bot(user, peer)
-    await _check_spam_blocked(user, peer)
+    await _check_spam_blocked(user, peer, reply_to_message_id=reply_to_message_id)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1445,8 +1450,6 @@ async def send_multi_media(request: SendMultiMedia | SendMultiMedia_148 | SendMu
         raise ErrorRpc(error_code=400, error_message="MEDIA_EMPTY")
     if len(request.multi_media) > 10:
         raise ErrorRpc(error_code=400, error_message="MULTI_MEDIA_TOO_LONG")
-
-    reply_to_message_id = _resolve_reply_id(request)
     if reply_to_message_id and not await MessageRef.filter(id=reply_to_message_id, peer=peer).exists():
         raise ErrorRpc(error_code=400, error_message="REPLY_TO_INVALID")
 
@@ -1621,8 +1624,10 @@ async def send_inline_bot_result(request: SendInlineBotResult, user_id: int) -> 
 
     user = await User.get(id=user_id).only("id", "first_name", "bot", "spam_blocked")
 
+    reply_to_message_id = _resolve_reply_id(request)
+
     _check_disallow_send_to_bot(user, peer)
-    await _check_spam_blocked(user, peer)
+    await _check_spam_blocked(user, peer, reply_to_message_id=reply_to_message_id)
     _check_we_blocked_user(peer)
     await _check_bot_blocked(user, peer)
 
@@ -1634,8 +1639,6 @@ async def send_inline_bot_result(request: SendInlineBotResult, user_id: int) -> 
     )
     if item is None:
         raise ErrorRpc(error_code=400, error_message="RESULT_ID_INVALID")
-
-    reply_to_message_id = _resolve_reply_id(request)
     is_channel_post, post_info, post_signature = await _make_channel_post_info_maybe(peer, user, participant)
     if not is_channel_post:
         is_anonymous, post_signature = _make_supergroup_anonymous_maybe(peer, participant)

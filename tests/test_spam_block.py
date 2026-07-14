@@ -7,7 +7,7 @@ from piltover.app.bot_handlers.adminbot.callback_handler import adminbot_callbac
 from piltover.app.bot_handlers.adminbot.utils import send_bot_message
 from piltover.app.utils.spam_block import check_user_spam_blocked, set_user_spam_blocked
 from piltover.db.enums import PeerType
-from piltover.db.models import Peer, User
+from piltover.db.models import MessageRef, Peer, User
 from piltover.exceptions import ErrorRpc
 from piltover.tl import Int
 from piltover.tl.serialization_context import SerializationContext
@@ -91,7 +91,7 @@ async def test_check_user_spam_blocked_blocks_regular_peer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_user_spam_blocked_allows_spambot() -> None:
+async def test_check_user_spam_blocked_allows_any_bot() -> None:
     blocked = await User.create(phone_number="900000012", first_name="Blocked", spam_blocked=True)
     spambot = await User.filter(username__username="spambot", system=True).first()
     assert spambot is not None
@@ -99,6 +99,50 @@ async def test_check_user_spam_blocked_allows_spambot() -> None:
     await peer.fetch_related("user", "user__username")
 
     await check_user_spam_blocked(blocked, peer)
+
+    other_bot = await User.create(phone_number=None, first_name="Helper", bot=True)
+    other_bot_peer = await Peer.create(owner_id=blocked.id, user_id=other_bot.id, type=PeerType.USER)
+    await check_user_spam_blocked(blocked, other_bot_peer)
+
+
+@pytest.mark.asyncio
+async def test_check_user_spam_blocked_allows_reply_to_incoming() -> None:
+    blocked = await User.create(phone_number="900000013", first_name="Blocked", spam_blocked=True)
+    target = await User.create(phone_number="900000014", first_name="Target", bot=False)
+    peer = await Peer.create(owner_id=blocked.id, user_id=target.id, type=PeerType.USER)
+    await peer.fetch_related("user")
+
+    incoming = await MessageRef.create_for_peer(peer, target, opposite=True, message="hi")
+    incoming_ref = incoming[peer]
+
+    await check_user_spam_blocked(blocked, peer, reply_to_message_id=incoming_ref.id)
+
+
+@pytest.mark.asyncio
+async def test_check_user_spam_blocked_blocks_cold_message() -> None:
+    blocked = await User.create(phone_number="900000015", first_name="Blocked", spam_blocked=True)
+    target = await User.create(phone_number="900000016", first_name="Target", bot=False)
+    peer = await Peer.create(owner_id=blocked.id, user_id=target.id, type=PeerType.USER)
+    await peer.fetch_related("user")
+
+    with pytest.raises(ErrorRpc) as exc:
+        await check_user_spam_blocked(blocked, peer)
+    assert exc.value.error_message == "USER_RESTRICTED"
+
+
+@pytest.mark.asyncio
+async def test_check_user_spam_blocked_blocks_reply_to_own_message() -> None:
+    blocked = await User.create(phone_number="900000017", first_name="Blocked", spam_blocked=True)
+    target = await User.create(phone_number="900000018", first_name="Target", bot=False)
+    peer = await Peer.create(owner_id=blocked.id, user_id=target.id, type=PeerType.USER)
+    await peer.fetch_related("user")
+
+    outgoing = await MessageRef.create_for_peer(peer, blocked, opposite=True, message="hey")
+    outgoing_ref = outgoing[peer]
+
+    with pytest.raises(ErrorRpc) as exc:
+        await check_user_spam_blocked(blocked, peer, reply_to_message_id=outgoing_ref.id)
+    assert exc.value.error_message == "USER_RESTRICTED"
 
 
 @pytest.mark.asyncio

@@ -3,13 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from piltover.db.enums import PeerType
-from piltover.db.models import Username
+from piltover.db.models import MessageRef
 from piltover.exceptions import ErrorRpc
 
 if TYPE_CHECKING:
     from piltover.db.models import Peer, User
-
-SPAMBOT_USERNAME = "spambot"
 
 
 async def set_user_spam_blocked(user: User, blocked: bool) -> bool:
@@ -24,21 +22,23 @@ async def set_user_spam_blocked(user: User, blocked: bool) -> bool:
     return True
 
 
-async def _peer_username(peer: Peer) -> str | None:
-    if peer.type is not PeerType.USER:
-        return None
-    if isinstance(peer.user.username, Username):
-        return peer.user.username.username
-    return await peer.user.get_raw_username()
-
-
-async def check_user_spam_blocked(user: User, peer: Peer | None = None) -> None:
+async def check_user_spam_blocked(
+        user: User, peer: Peer | None = None, *, reply_to_message_id: int | None = None,
+) -> None:
     if user.bot or not getattr(user, "spam_blocked", False):
         return
 
     if peer is not None:
-        username = await _peer_username(peer)
-        if username == SPAMBOT_USERNAME:
-            return
+        if peer.type is PeerType.USER:
+            await peer.fetch_related("user")
+            if peer.user.bot:
+                return
+
+        if reply_to_message_id is not None:
+            reply_to = await MessageRef.get_or_none(
+                peer=peer, id=reply_to_message_id,
+            ).select_related("content")
+            if reply_to is not None and reply_to.content.author_id != user.id:
+                return
 
     raise ErrorRpc(error_code=403, error_message="USER_RESTRICTED")
