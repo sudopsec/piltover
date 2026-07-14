@@ -353,11 +353,26 @@ APP_CONFIG_JSON = JsonObject(value=[
 ])
 
 
+async def _app_config_json() -> JsonObject:
+    spambot_id = "5434988373"
+    spambot_username = await Username.get_or_none(username="spambot").select_related("user")
+    if spambot_username is not None and spambot_username.user_id is not None:
+        spambot_id = str(spambot_username.user_id)
+
+    values = []
+    for item in APP_CONFIG_JSON.value:
+        if item.key == "telegram_antispam_user_id":
+            values.append(JsonObjectValue(key=item.key, value=JsonString(value=spambot_id)))
+        else:
+            values.append(item)
+    return JsonObject(value=values)
+
+
 @handler.on_request(GetAppConfig, ReqHandlerFlags.AUTH_NOT_REQUIRED | ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def get_app_config(request: GetAppConfig):
     if request.hash == APP_CONFIG_HASH:
         return AppConfigNotModified()
-    return TLAppConfig(hash=APP_CONFIG_HASH, config=APP_CONFIG_JSON)
+    return TLAppConfig(hash=APP_CONFIG_HASH, config=await _app_config_json())
 
 
 @handler.on_request(GetCountriesList, ReqHandlerFlags.AUTH_NOT_REQUIRED | ReqHandlerFlags.BOT_NOT_ALLOWED)

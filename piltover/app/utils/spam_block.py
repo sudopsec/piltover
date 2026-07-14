@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import piltover.app.utils.updates_manager as upd
 from piltover.db.enums import PeerType
 from piltover.db.models import Username
 from piltover.exceptions import ErrorRpc
@@ -20,6 +19,7 @@ async def set_user_spam_blocked(user: User, blocked: bool) -> bool:
     user.spam_blocked = blocked
     await user.save(update_fields=["spam_blocked"])
     await user.inc_version()
+    import piltover.app.utils.updates_manager as upd
     await upd.update_user(user)
     return True
 

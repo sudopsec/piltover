@@ -66,7 +66,7 @@ class User(Model):
 
     cached_username: models.Username | None | _Missing = _MISSING
 
-    _CACHE_VERSION = 1
+    _CACHE_VERSION = 2
 
     @property
     def background_emojis_prefetched(self) -> bool:
@@ -207,6 +207,7 @@ class User(Model):
             emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
             last_seen=presence_last_seen,
             verified=getattr(self, "verified", False),
+            spam_blocked=getattr(self, "spam_blocked", False),
         )
 
         await Cache.obj.set(cache_key, result)
@@ -369,6 +370,7 @@ class User(Model):
                 emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
                 last_seen=int(presence.last_seen.timestamp()) if presence is not None else None,
                 verified=getattr(user, "verified", False),
+                spam_blocked=getattr(user, "spam_blocked", False),
             ))
 
             to_cache.append((user._cache_key(), tl[-1]))

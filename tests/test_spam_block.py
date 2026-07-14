@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import pytest
 from pyrogram.raw.types import UpdateNewMessage
 
@@ -7,6 +9,9 @@ from piltover.app.utils.spam_block import check_user_spam_blocked, set_user_spam
 from piltover.db.enums import PeerType
 from piltover.db.models import Peer, User
 from piltover.exceptions import ErrorRpc
+from piltover.tl import Int
+from piltover.tl.serialization_context import SerializationContext
+from piltover.tl.to_format import UserToFormat
 from tests.client import TestClient
 
 
@@ -43,6 +48,34 @@ async def test_spambot_shows_limited_status() -> None:
         assert "limited" in bot_message.message.message.lower()
 
         await set_user_spam_blocked(user, False)
+
+
+def _user_flags(data: bytes) -> int:
+    stream = BytesIO(data)
+    Int.read(stream)
+    return Int.read(stream)
+
+
+@pytest.mark.asyncio
+async def test_spam_blocked_self_user_has_restricted_tl_flags() -> None:
+    user = UserToFormat(id=42, first_name="Blocked", lang_code="en", spam_blocked=True)
+    ctx = SerializationContext(auth_id=1, user_id=42, layer=200)
+    flags = _user_flags(user.write(ctx))
+
+    assert flags & (1 << 10)
+    assert flags & (1 << 18)
+    assert b"spam" in user.write(ctx)
+    assert b"all" in user.write(ctx)
+
+
+@pytest.mark.asyncio
+async def test_spam_blocked_not_visible_to_other_users_in_tl() -> None:
+    user = UserToFormat(id=42, first_name="Blocked", lang_code="en", spam_blocked=True)
+    ctx = SerializationContext(auth_id=1, user_id=99, layer=200)
+    flags = _user_flags(user.write(ctx))
+
+    assert not (flags & (1 << 10))
+    assert not (flags & (1 << 18))
 
 
 @pytest.mark.asyncio

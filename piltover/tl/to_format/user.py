@@ -1,11 +1,18 @@
 from time import time
 
+from piltover.app.utils.spam_restriction import spam_restriction_reasons
 from piltover.context import NeedContextValuesContext
 from piltover.tl import types
 from piltover.tl.serialization_context import EMPTY_SERIALIZATION_CONTEXT, SerializationContext
 
 
 class UserToFormat(types.UserToFormatInternal):
+    __slots__ = ("spam_blocked",)
+
+    def __init__(self, *, spam_blocked: bool = False, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.spam_blocked = spam_blocked
+
     def _write(self, ctx: SerializationContext) -> bytes:
         from piltover.db.enums import PrivacyRuleKeyType
         from piltover.db.models.presence import Presence, EMPTY as PRESENCE_EMPTY
@@ -46,6 +53,13 @@ class UserToFormat(types.UserToFormatInternal):
                 and emoji_status.until < time():
             emoji_status = None
 
+        is_self = self.id == ctx.user_id
+        restricted = False
+        restriction_reason = None
+        if is_self and self.spam_blocked:
+            restricted = True
+            restriction_reason = spam_restriction_reasons()
+
         return types.User(
             id=self.id,
             first_name=self.first_name if contact is None or not contact.first_name else contact.first_name,
@@ -53,7 +67,7 @@ class UserToFormat(types.UserToFormatInternal):
             username=self.username,
             phone=phone_number,
             lang_code=self.lang_code,
-            is_self=self.id == ctx.user_id,
+            is_self=is_self,
             photo=photo,
             access_hash=-1,
             status=presence,
@@ -65,7 +79,8 @@ class UserToFormat(types.UserToFormatInternal):
             mutual_contact=is_contact and current_is_contact,
             emoji_status=emoji_status,
             verified=self.verified,
-
+            restricted=restricted,
+            restriction_reason=restriction_reason,
             premium=False,
         ).write(ctx)
 
