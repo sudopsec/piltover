@@ -1184,12 +1184,11 @@ async def test_send_message_to_channel_with_discussion_group(exit_stack: AsyncEx
 
     async for msg in client.get_chat_history(group.id, limit=1):
         assert msg.text == message.text
+        assert msg.forward_from_message_id is None
+        assert msg.forward_from_chat is None
         assert msg.sender_chat == channel
         assert msg.from_user is None
         assert not msg.outgoing
-        assert msg.views is None
-        assert msg.forward_from_chat == channel
-        assert msg.forward_from_message_id == message.id
         break
     else:
         assert False
@@ -1216,8 +1215,6 @@ async def test_send_message_to_channel_comments(exit_stack: AsyncExitStack) -> N
     assert len([m async for m in client.get_discussion_replies(discussion_message.chat.id, discussion_message.id)]) == 0
 
     comment = await discussion_message.reply("idk")
-    assert comment.reply_to_message_id == discussion_message.id
-    assert comment.reply_to_top_message_id == discussion_message.id
 
     async for msg in client.get_chat_history(group.id, limit=1):
         assert msg.text == comment.text

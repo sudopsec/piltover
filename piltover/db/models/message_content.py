@@ -561,10 +561,7 @@ class MessageContent(Model):
 
     async def clone_discussion_mirror(
             self, related_peer: models.Peer, broadcast_channel_id: int,
-            channel_post_ref: models.MessageRef,
     ) -> MessageContent:
-        fwd_header = await self.create_fwd_header(channel_post_ref, to_self=False, discussion=True)
-
         content = await models.MessageContent.create(
             message=self.message,
             entities=self.entities,
@@ -574,8 +571,8 @@ class MessageContent(Model):
             media=self.media,
             media_group_id=self.media_group_id,
             channel_post=False,
+            post_info=self.post_info,
             post_author=self.post_author,
-            fwd_header=fwd_header,
             send_as_channel_id=broadcast_channel_id,
             no_forwards=self.no_forwards,
             can_see_reactions_list=related_peer.can_see_reactions_list(),

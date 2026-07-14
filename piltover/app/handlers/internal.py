@@ -112,7 +112,7 @@ async def create_discussion_thread(request: CreateDiscussionThread) -> TLObject:
 
         broadcast_channel = message.peer.channel
         discussion_content = await message.content.clone_discussion_mirror(
-            discussion_peer, broadcast_channel.id, message,
+            discussion_peer, broadcast_channel.id,
         )
         discussion_message = await MessageRef.create(
             peer=discussion_peer,

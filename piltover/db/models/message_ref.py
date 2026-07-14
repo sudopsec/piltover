@@ -727,8 +727,6 @@ class MessageRef(Model):
             self.top_message_id is not None
             and self.reply_to_id == self.top_message_id
             and not self.is_discussion
-            and self.peer.type is PeerType.CHANNEL
-            and self.peer.channel.forum
         )
 
         return MessageReplyHeader(
