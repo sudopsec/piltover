@@ -70,10 +70,13 @@ async def _wait_for_invoke_after(session: Session, msg_ids: list[int]) -> RpcRes
 
 
 async def invoke_with_layer(client: Client, request: Message[InvokeWithLayer], session: Session) -> RpcResult:
-    if request.obj.layer > session.layer:
+    from piltover.tl.layer_info import layer as max_layer
+
+    layer = min(request.obj.layer, max_layer)
+    if layer != session.layer:
         logger.trace(f"saving layer for key {session.auth_data.perm_auth_key_id}")
-        await AuthKey.filter(id=session.auth_data.perm_auth_key_id).update(layer=request.obj.layer)
-    session.layer = request.obj.layer
+        await AuthKey.filter(id=session.auth_data.perm_auth_key_id).update(layer=layer)
+    session.layer = layer
     return await _invoke_inner_query(client, request, session)
 
 

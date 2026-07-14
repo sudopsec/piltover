@@ -43,6 +43,13 @@ class RequestContext(Generic[T]):
 request_ctx: ContextVar[RequestContext] = ContextVar("request_ctx")
 
 
+def try_get_request_ctx() -> RequestContext | None:
+    try:
+        return request_ctx.get()
+    except LookupError:
+        return None
+
+
 class NeedContextValuesContext:
     __slots__ = (
         "poll_answers", "chat_participants", "channel_participants", "users", "channel_messages", "stickersets",

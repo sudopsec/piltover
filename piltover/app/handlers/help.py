@@ -226,7 +226,7 @@ APP_CONFIG_JSON = JsonObject(value=[
         JsonString(value="SETUP_PASSWORD"),
     ])),
     JsonObjectValue(key="pm_read_date_expire_period", value=JsonNumber(value=7 * 24 * 60 * 60.0)),
-    JsonObjectValue(key="premium_bot_username", value=JsonString(value="PremiumBot")),
+    JsonObjectValue(key="premium_bot_username", value=JsonString(value="premiumbot")),
     JsonObjectValue(key="premium_gift_attach_menu_icon", value=JsonBool(value=True)),
     JsonObjectValue(key="premium_gift_text_field_icon", value=JsonBool(value=False)),
     JsonObjectValue(key="premium_invoice_slug", value=JsonString(value="abc")),

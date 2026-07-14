@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any
 
 from piltover.app.handlers.messages.sending import send_message_internal
 from piltover.context import RequestContext, request_ctx
 from piltover.app.utils.bot_api.response import api_error, api_ok
-from piltover.app.utils.bot_api.serialize import message_to_bot_api, user_to_bot_api
+from piltover.app.utils.bot_api.serialize import message_to_bot_api, private_chat_to_bot_api, user_to_bot_api
 from piltover.app.utils.bot_api.updates import _BotApiConflict, bot_api_updates
 from piltover.db.enums import PeerType
 from piltover.db.models import Bot, MessageRef, Peer, User, Username
 from piltover.exceptions import ErrorRpc
 from piltover.tl import UpdateNewMessage
+from piltover.tl.types.messages import BotCallbackAnswer as MessagesBotCallbackAnswer
 
 
 async def dispatch_method(bot: Bot, bot_user: User, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -24,6 +27,21 @@ async def dispatch_method(bot: Bot, bot_user: User, method: str, params: dict[st
 
     if method_lower == "sendmessage":
         return await _send_message(bot_user, params)
+
+    if method_lower == "editmessagetext":
+        return await _edit_message_text(bot_user, params)
+
+    if method_lower == "deletemessage":
+        return await _delete_message(bot_user, params)
+
+    if method_lower == "getchat":
+        return await _get_chat(bot_user, params)
+
+    if method_lower == "answercallbackquery":
+        return await _answer_callback_query(bot_user, params)
+
+    if method_lower == "answerprecheckoutquery":
+        return await _answer_pre_checkout_query(bot_user, params)
 
     if method_lower == "setwebhook":
         return _set_webhook(bot_user, params)
@@ -82,6 +100,17 @@ async def _resolve_chat_peer(bot_user: User, chat_id: Any) -> Peer | None:
     )
 
 
+def _worker_context(bot_user: User, auth_id: int):
+    from piltover.app.app import app
+
+    if app._worker is None:
+        return None
+    return request_ctx.set(RequestContext(
+        0, None, 0, 0, None, 201, auth_id, bot_user.id,
+        app._worker, app._worker._storage,
+    ))
+
+
 async def _send_message(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:
     chat_id = params.get("chat_id")
     text = params.get("text")
@@ -103,17 +132,13 @@ async def _send_message(bot_user: User, params: dict[str, Any]) -> dict[str, Any
         if isinstance(reply_params, dict):
             reply_to_message_id = reply_params.get("message_id")
 
-    from piltover.app.app import app
     from piltover.db.models import UserAuthorization
 
-    if app._worker is None:
+    auth = await UserAuthorization.get_or_none(user_id=bot_user.id)
+    ctx_token = _worker_context(bot_user, auth.id if auth is not None else 0)
+    if ctx_token is None:
         return api_error("Internal error: worker is not available", error_code=500)
 
-    auth = await UserAuthorization.get_or_none(user_id=bot_user.id)
-    ctx_token = request_ctx.set(RequestContext(
-        0, None, 0, 0, None, 201, auth.id if auth is not None else 0, bot_user.id,
-        app._worker, app._worker._storage,
-    ))
     try:
         updates = await send_message_internal(
             user=bot_user,
@@ -143,6 +168,143 @@ async def _send_message(bot_user: User, params: dict[str, Any]) -> dict[str, Any
     if message_ref is None:
         return api_error("Internal error: message was not created", error_code=500)
     return api_ok(await message_to_bot_api(bot_user, message_ref.peer, message_ref))
+
+
+async def _edit_message_text(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:
+    chat_id = params.get("chat_id")
+    message_id = params.get("message_id")
+    text = params.get("text")
+    if chat_id is None:
+        return api_error("Bad Request: chat_id is required")
+    if message_id is None:
+        return api_error("Bad Request: message_id is required")
+    if text is None:
+        return api_error("Bad Request: text is required")
+
+    peer = await _resolve_chat_peer(bot_user, chat_id)
+    if peer is None:
+        return api_error("Bad Request: chat not found")
+    if peer.type is not PeerType.USER:
+        return api_error("Bad Request: only private chats are supported")
+
+    message = await MessageRef.get_or_none(id=int(message_id), peer=peer).select_related("content")
+    if message is None or message.content.author_id != bot_user.id:
+        return api_error("Bad Request: message to edit not found")
+
+    if message.content.message == text:
+        return api_error("Bad Request: message is not modified")
+
+    import piltover.app.utils.updates_manager as upd
+
+    message.content.message = str(text)
+    message.content.edit_date = datetime.now(UTC)
+    message.content.version += 1
+    await message.content.save(update_fields=["message", "edit_date", "version"])
+
+    opposite_peer = await Peer.get_or_create_for_user(peer.user_id, bot_user.id)
+    refs = await MessageRef.filter(
+        content_id=message.content_id,
+        peer_id__in=[peer.id, opposite_peer.id],
+    ).select_related("content", "content__author", "peer", "peer__user")
+
+    await upd.edit_message(bot_user.id, {ref.peer: ref for ref in refs})
+    return api_ok(await message_to_bot_api(bot_user, peer, message))
+
+
+async def _delete_message(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:
+    chat_id = params.get("chat_id")
+    message_id = params.get("message_id")
+    if chat_id is None:
+        return api_error("Bad Request: chat_id is required")
+    if message_id is None:
+        return api_error("Bad Request: message_id is required")
+
+    peer = await _resolve_chat_peer(bot_user, chat_id)
+    if peer is None:
+        return api_error("Bad Request: chat not found")
+    if peer.type is not PeerType.USER:
+        return api_error("Bad Request: only private chats are supported")
+
+    message = await MessageRef.get_or_none(id=int(message_id), peer=peer)
+    if message is None:
+        return api_error("Bad Request: message can't be deleted")
+
+    import piltover.app.utils.updates_manager as upd
+
+    content_id = message.content_id
+    peer_id = message.peer_id
+    all_messages = await MessageRef.filter(content_id=content_id).select_related("peer")
+    messages_by_owner: dict[int, list[int]] = defaultdict(list)
+    for ref in all_messages:
+        if ref.peer.owner_id is not None:
+            messages_by_owner[ref.peer.owner_id].append(ref.id)
+
+    await MessageRef.filter(content_id=content_id).delete()
+    await Peer.sync_last_message_bulk([peer_id, *(ref.peer_id for ref in all_messages)])
+    await upd.delete_messages(bot_user.id, messages_by_owner)
+    return api_ok(True)
+
+
+async def _get_chat(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:
+    chat_id = params.get("chat_id")
+    if chat_id is None:
+        return api_error("Bad Request: chat_id is required")
+
+    peer = await _resolve_chat_peer(bot_user, chat_id)
+    if peer is None:
+        return api_error("Bad Request: chat not found")
+    if peer.type is not PeerType.USER:
+        return api_error("Bad Request: only private chats are supported")
+
+    return api_ok(await private_chat_to_bot_api(peer))
+
+
+async def _answer_callback_query(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:
+    query_id = params.get("callback_query_id")
+    if query_id is None:
+        return api_error("Bad Request: callback_query_id is required")
+
+    from piltover.app.app import app
+
+    if app._worker is None:
+        return api_error("Internal error: worker is not available", error_code=500)
+
+    answer = MessagesBotCallbackAnswer(
+        alert=_parse_bool(params.get("show_alert")),
+        has_url=params.get("url") is not None,
+        native_ui=True,
+        message=str(params["text"]) if params.get("text") is not None else None,
+        url=str(params["url"]) if params.get("url") is not None else None,
+        cache_time=_parse_int(params.get("cache_time"), 0),
+    )
+    await app._worker.pubsub.notify(
+        topic=f"bot-callback-query/{int(query_id)}",
+        data=answer.write(),
+    )
+    return api_ok(True)
+
+
+async def _answer_pre_checkout_query(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:
+    query_id = params.get("pre_checkout_query_id")
+    if query_id is None:
+        return api_error("Bad Request: pre_checkout_query_id is required")
+
+    from piltover.app.app import app
+
+    if app._worker is None:
+        return api_error("Internal error: worker is not available", error_code=500)
+
+    ok = _parse_bool(params.get("ok", True))
+    if ok:
+        data = b"1"
+    else:
+        data = str(params.get("error_message") or "PAYMENT_FAILED").encode("utf-8")
+
+    await app._worker.pubsub.notify(
+        topic=f"bot-precheckout-query/{int(query_id)}",
+        data=data,
+    )
+    return api_ok(True)
 
 
 def _set_webhook(bot_user: User, params: dict[str, Any]) -> dict[str, Any]:

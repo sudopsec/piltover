@@ -95,3 +95,29 @@ async def test_bot_api_webhook_blocks_get_updates(app_server) -> None:
 
         updates = await dispatch_method(bot, bot_user, "getUpdates", {})
         assert updates["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_bot_api_get_chat_and_edit_message(app_server) -> None:
+    async with TestClient(phone_number="123456789") as client:
+        db_user = await User.get(phone_number=client.phone_number)
+        bot, = await _create_bots(db_user, 1, username_prefix="api4_")
+        bot_user = await User.get(id=bot.bot_id)
+
+        chat = await dispatch_method(bot, bot_user, "getChat", {"chat_id": db_user.id})
+        assert chat["ok"] is True
+        assert chat["result"]["type"] == "private"
+        assert chat["result"]["id"] == db_user.id
+
+        sent = await dispatch_method(
+            bot, bot_user, "sendMessage",
+            {"chat_id": db_user.id, "text": "editable"},
+        )
+        assert sent["ok"] is True
+
+        edited = await dispatch_method(
+            bot, bot_user, "editMessageText",
+            {"chat_id": db_user.id, "message_id": sent["result"]["message_id"], "text": "edited"},
+        )
+        assert edited["ok"] is True
+        assert edited["result"]["text"] == "edited"

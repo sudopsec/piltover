@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from piltover.db.models import MessageRef, Peer, User
+from piltover.db.models import CallbackQuery, BotPrecheckoutQuery, MessageRef, Peer, User
 
 
 def _user_field(user: User, name: str) -> str | None:
@@ -61,9 +61,7 @@ async def message_to_bot_api(bot_user: User, peer: Peer, message: MessageRef) ->
         "chat": await private_chat_to_bot_api(peer),
     }
 
-    if author is not None and author.id != bot_user.id:
-        result["from"] = await user_to_bot_api(author)
-    elif author is not None:
+    if author is not None:
         result["from"] = await user_to_bot_api(author)
 
     if content.message:
@@ -73,3 +71,29 @@ async def message_to_bot_api(bot_user: User, peer: Peer, message: MessageRef) ->
         result["edit_date"] = int(content.edit_date.timestamp())
 
     return result
+
+
+async def callback_query_to_bot_api(bot_user: User, query: CallbackQuery) -> dict:
+    message = await MessageRef.get(id=query.message_id).select_related(
+        "content", "content__author", "peer", "peer__user",
+    )
+    peer = await Peer.get_or_create_for_user(
+        bot_user.id, query.user_id, select_related=("user", "user__username"),
+    )
+    return {
+        "id": str(query.id),
+        "from": await user_to_bot_api(await User.get(id=query.user_id)),
+        "message": await message_to_bot_api(bot_user, message.peer, message),
+        "chat_instance": str(query.user_id),
+        "data": query.data.decode("utf-8", errors="surrogateescape"),
+    }
+
+
+async def pre_checkout_query_to_bot_api(query: BotPrecheckoutQuery) -> dict:
+    return {
+        "id": str(query.id),
+        "from": await user_to_bot_api(await User.get(id=query.user_id)),
+        "currency": query.currency,
+        "total_amount": query.total_amount,
+        "invoice_payload": query.payload.decode("utf-8", errors="surrogateescape"),
+    }

@@ -4,10 +4,10 @@ from piltover.db.models import UserStarsBalance
 from piltover.enums import ReqHandlerFlags
 from piltover.tl import StarsTopupOption, TLObjectVector, StatsGraphError, StarsAmount, StarsRevenueStatus, UpdateStarsBalance
 from piltover.tl.functions.payments import (
-    GetStarsStatus, GetStarsSubscriptions, GetStarsTransactions, GetStarsTransactions_181,
-    GetStarsTransactions_182, GetStarsTransactionsByID, GetStarsTopupOptions,
-    GetPaymentForm, SendPaymentForm, SendStarsForm, ValidateRequestedInfo, GetStarsRevenueStats,
-    GetPaymentReceipt,
+    GetStarsStatus, GetStarsStatusTon, GetStarsSubscriptions, GetStarsTransactions,
+    GetStarsTransactions_181, GetStarsTransactions_182, GetStarsTransactionsByID,
+    GetStarsTransactionsByIDTon, GetStarsTopupOptions, GetPaymentForm, SendPaymentForm,
+    SendStarsForm, ValidateRequestedInfo, GetStarsRevenueStats, GetPaymentReceipt,
 )
 from piltover.tl.types.payments import StarsStatus, PaymentResult, ValidatedRequestedInfo, StarsRevenueStats, PaymentReceiptStars
 from piltover.worker import MessageHandler
@@ -23,9 +23,8 @@ _TOPUP_OPTIONS = TLObjectVector([
 ])
 
 
-@handler.on_request(GetStarsStatus, ReqHandlerFlags.BOT_NOT_ALLOWED)
-async def get_stars_status(request: GetStarsStatus, user_id: int) -> StarsStatus:
-    wallet_user_id = await stars.ensure_wallet_user_id(user_id, request.peer)
+async def _get_stars_status(peer: object, user_id: int) -> StarsStatus:
+    wallet_user_id = await stars.ensure_wallet_user_id(user_id, peer)
     history, _ = await stars.fetch_transactions(
         wallet_user_id,
         inbound=True,
@@ -35,6 +34,16 @@ async def get_stars_status(request: GetStarsStatus, user_id: int) -> StarsStatus
         limit=5,
     )
     return await stars.build_stars_status(wallet_user_id, history=history)
+
+
+@handler.on_request(GetStarsStatus, ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def get_stars_status(request: GetStarsStatus, user_id: int) -> StarsStatus:
+    return await _get_stars_status(request.peer, user_id)
+
+
+@handler.on_request(GetStarsStatusTon, ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def get_stars_status_ton(request: GetStarsStatusTon, user_id: int) -> StarsStatus:
+    return await _get_stars_status(request.peer, user_id)
 
 
 async def _stars_transactions_status(
@@ -99,12 +108,24 @@ async def get_stars_transactions_182(request: GetStarsTransactions_182, user_id:
     )
 
 
-@handler.on_request(GetStarsTransactionsByID, ReqHandlerFlags.BOT_NOT_ALLOWED)
-async def get_stars_transactions_by_id(request: GetStarsTransactionsByID, user_id: int) -> StarsStatus:
-    wallet_user_id = await stars.ensure_wallet_user_id(user_id, request.peer)
-    transaction_ids = [item.id for item in request.id]
+async def _get_stars_transactions_by_id(peer: object, user_id: int, transaction_ids: list[str]) -> StarsStatus:
+    wallet_user_id = await stars.ensure_wallet_user_id(user_id, peer)
     history = await stars.fetch_transactions_by_id(wallet_user_id, transaction_ids)
     return await stars.build_stars_status(wallet_user_id, history=history)
+
+
+@handler.on_request(GetStarsTransactionsByID, ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def get_stars_transactions_by_id(request: GetStarsTransactionsByID, user_id: int) -> StarsStatus:
+    return await _get_stars_transactions_by_id(
+        request.peer, user_id, [item.id for item in request.id],
+    )
+
+
+@handler.on_request(GetStarsTransactionsByIDTon, ReqHandlerFlags.BOT_NOT_ALLOWED)
+async def get_stars_transactions_by_id_ton(request: GetStarsTransactionsByIDTon, user_id: int) -> StarsStatus:
+    return await _get_stars_transactions_by_id(
+        request.peer, user_id, [item.id for item in request.id],
+    )
 
 
 @handler.on_request(GetStarsSubscriptions, ReqHandlerFlags.BOT_NOT_ALLOWED)

@@ -32,6 +32,32 @@ async def test_test_bot_ping_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_premiumbot_start_and_status() -> None:
+    async with TestClient(phone_number="123456789") as client:
+        premium_bot = await client.get_users("premiumbot")
+
+        await client.send_message(premium_bot.id, "/start")
+
+        user_message = await client.expect_update(UpdateNewMessage)
+        bot_message = await client.expect_update(UpdateNewMessage)
+
+        if user_message.message.from_id.user_id != client.me.id:
+            user_message, bot_message = bot_message, user_message
+
+        assert "Telegram Premium" in bot_message.message.message
+
+        await client.send_message(premium_bot.id, "/start status")
+
+        user_message = await client.expect_update(UpdateNewMessage)
+        bot_message = await client.expect_update(UpdateNewMessage)
+
+        if user_message.message.from_id.user_id != client.me.id:
+            user_message, bot_message = bot_message, user_message
+
+        assert "do not have" in bot_message.message.message.lower()
+
+
+@pytest.mark.asyncio
 async def test_stars_pay_bot_start_shows_invoice_buttons() -> None:
     async with TestClient(phone_number="123456789") as client:
         stars_pay_bot = await client.get_users("stars_pay")

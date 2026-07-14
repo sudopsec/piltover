@@ -669,7 +669,7 @@ async def get_messages_views(request: GetMessagesViews, user_id: int) -> Message
 
     query = Q(id__in=request.id, content__post_info_id__not_isnull=True, peer=peer)
 
-    refs = await MessageRef.filter(query).select_related("content", "content__post_info")
+    refs = await MessageRef.filter(query).select_related("content", "content__post_info", "peer")
     content_ids = [ref.content_id for ref in refs]
     messages = {message.id: message for message in refs}
 
@@ -1138,16 +1138,21 @@ async def get_discussion_message(request: GetDiscussionMessage, user_id: int) ->
     if channel is None:
         raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
 
-    message_query = Q(id=request.msg_id, peer__channel_id=peer_target_id, content__type=MessageType.REGULAR)
-    message_query = append_channel_min_message_id_to_query_maybe(channel, message_query)
-    message = await MessageRef.get_or_none(message_query).only("discussion_id")
+    message = await MessageRef.get_or_none(
+        Q(id=request.msg_id, peer__channel_id=peer_target_id, content__type=MessageType.REGULAR),
+    ).only("discussion_id", "discussion_top_message_id")
     if message is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
-    if message.discussion_id is None:
+    discussion_thread_id = message.discussion_id or message.discussion_top_message_id
+    if discussion_thread_id is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
-    discussion_message = await MessageRef.get(id=message.discussion_id).select_related(*MessageRef.PREFETCH_MAYBECACHED)
+    discussion_message = await MessageRef.get_or_none(
+        id=discussion_thread_id,
+    ).select_related(*MessageRef.PREFETCH_MAYBECACHED)
+    if discussion_message is None:
+        raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
     ucc = UsersChatsChannels()
     ucc.add_message(discussion_message.content_id)
@@ -1242,29 +1247,46 @@ async def get_message_read_participants(request: GetMessageReadParticipants, use
 @handler.on_request(ReadDiscussion, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def read_discussion(request: ReadDiscussion, user_id: int) -> bool:
     peer = await Peer.from_input_peer_raise(user_id, request.peer, "CHANNEL_PRIVATE", peer_types=(PeerType.CHANNEL,))
-    # TODO: check if user has access to messages
+    channel = peer.channel
 
-    discussion_query = Q(id=request.msg_id, content__type=MessageType.REGULAR, is_discussion=True, peer=peer)
-    discussion_query = append_channel_min_message_id_to_query_maybe(peer, discussion_query)
-    message = await MessageRef.get_or_none(discussion_query)
-    if message is None:
+    post = await MessageRef.get_or_none(
+        Q(id=request.msg_id, peer__channel_id=channel.id, content__type=MessageType.REGULAR),
+    ).select_related("content").only(
+        "discussion_id", "discussion_top_message_id", "content__author_id",
+    )
+    discussion_thread_id = None if post is None else (post.discussion_id or post.discussion_top_message_id)
+    if post is None or discussion_thread_id is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
-    last_message_query = MessageRef.filter(reply_to_id=message.id).order_by("-id")
+    post_author_id = post.content.author_id
+    discussion_message = await MessageRef.get_or_none(id=discussion_thread_id).only("id")
+    if discussion_message is None:
+        raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
+
+    replies_query = Q(reply_to_id=discussion_message.id) | Q(top_message_id=discussion_message.id, join_type=Q.OR)
+    last_message_query = MessageRef.filter(replies_query).order_by("-id")
     if request.read_max_id:
         last_message_query = last_message_query.filter(id__lte=request.read_max_id)
 
     last_message_id = cast(int | None, await last_message_query.first().values_list("id", flat=True))
+    read_max_id = last_message_id or discussion_message.id
 
     state, created = await DiscussionReadState.get_or_create(
-        user_id=user_id, discussion_message_id=message.id, defaults={
-            "last_message_id": last_message_id or 0,
+        user_id=user_id, discussion_message_id=discussion_message.id, defaults={
+            "last_message_id": read_max_id,
         }
     )
-    if not created and last_message_id is not None and last_message_id > state.last_message_id:
-        state.last_message_id = last_message_id
+    if not created and read_max_id > state.last_message_id:
+        state.last_message_id = read_max_id
         await state.save(update_fields=["last_message_id"])
 
-    # TODO: updates
+    await upd.update_read_channel_discussion_inbox(
+        user_id, channel, request.msg_id, discussion_message.id, read_max_id,
+    )
+
+    if post_author_id and post_author_id != user_id:
+        await upd.update_read_channel_discussion_outbox(
+            channel, discussion_message.id, read_max_id, post_author_id,
+        )
 
     return True

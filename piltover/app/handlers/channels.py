@@ -23,7 +23,8 @@ from piltover.db.models import User, Channel, Peer, Dialog, ChatParticipant, Rea
     Chat, PeerColorOption, File, SlowmodeLastMessage, AdminLogEntry, Contact, MessageRef, MessageContent, \
     ReadHistoryChunk, DefaultSendAs, Stickerset, StickersetThumb
 from piltover.db.models.channel import CREATOR_RIGHTS
-from piltover.db.models.message_ref import append_channel_min_message_id_to_query_maybe
+from piltover.db.models.message_ref import append_channel_min_message_id_to_query_maybe, \
+    unlink_channel_posts_for_deleted_discussions
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc, Unreachable
 from piltover.session import SessionManager
@@ -586,20 +587,23 @@ async def delete_messages(request: DeleteMessages, user_id: int) -> AffectedMess
     ids = request.id[:100]
     ids_query = Q(id__in=ids, peer=peer)
     ids_query = append_channel_min_message_id_to_query_maybe(channel, ids_query, participant, user_id)
-    message_ids = cast(
-        list[int],
-        cast(
-            object,
-            await MessageRef.filter(ids_query).values_list("id", flat=True)
-        )
-    )
+    message_refs = await MessageRef.filter(ids_query).only("id", "is_discussion")
+    message_ids = [ref.id for ref in message_refs]
+    discussion_ids = [ref.id for ref in message_refs if ref.is_discussion]
 
     if not message_ids:
         return AffectedMessages(pts=channel.pts, pts_count=0)
 
     async with in_transaction():
+        if discussion_ids:
+            await MessageRef.filter(discussion_id__in=discussion_ids).update(
+                discussion_top_message_id=F("discussion_id"),
+            )
         await MessageRef.filter(id__in=message_ids).delete()
         await peer.sync_last_message()
+
+    if discussion_ids:
+        await unlink_channel_posts_for_deleted_discussions(discussion_ids)
 
     _, pts = await upd.delete_messages_channel(channel, message_ids)
 
@@ -632,7 +636,8 @@ async def edit_banned(request: EditBanned, user_id: int) -> Updates:
     if target_participant is not None and target_participant.banned_rights == new_banned_rights:
         return Updates(updates=[], users=[], chats=[], date=int(time()), seq=0)
 
-    # TODO: check if target_participant is not an admin
+    if target_participant is not None and target_participant.is_admin and user_id != channel.creator_id:
+        raise ErrorRpc(error_code=400, error_message="CHAT_ADMIN_REQUIRED")
 
     was_participant = target_participant is not None and not target_participant.left
     left = (
@@ -645,21 +650,23 @@ async def edit_banned(request: EditBanned, user_id: int) -> Updates:
     if target_participant is not None:
         participant_tl_before = target_participant.to_tl_channel_with_creator(user_id, channel.creator_id)
 
-    target_participant, created = await ChatParticipant.update_or_create(
-        user_id=target_id,
-        channel=channel,
-        defaults={
-            "banned_rights": new_banned_rights,
-            "banned_until": banned_until,
-            "left": left,
-            "inviter_id": 0,
-            "invited_at": datetime.now(UTC),
-            "chat_channel_id": channel.make_id(),
-            "admin_rights": ChatAdminRights.NONE,
-        },
-    )
-    if not created:
-        await channel.sync_admins_count(False)
+    if target_participant is None:
+        target_participant = await ChatParticipant.create(
+            user_id=target_id,
+            channel=channel,
+            banned_rights=new_banned_rights,
+            banned_until=banned_until,
+            left=left,
+            inviter_id=0,
+            invited_at=datetime.now(UTC),
+            chat_channel_id=channel.make_id(),
+            admin_rights=ChatAdminRights.NONE,
+        )
+    else:
+        target_participant.banned_rights = new_banned_rights
+        target_participant.banned_until = banned_until
+        target_participant.left = left
+        await target_participant.save(update_fields=["banned_rights", "banned_until", "left"])
 
     if new_banned_rights & ChatBannedRights.VIEW_MESSAGES:
         await ChatInviteRequest.delete_for_channel(channel, user_id=target_id)
@@ -877,8 +884,6 @@ async def get_participant(request: GetParticipant, user_id: int) -> ChannelParti
 
 @handler.on_request(ReadHistory, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def read_channel_history(request: ReadHistory, user_id: int) -> bool:
-    # TODO: exclude messages that are not available for the user
-
     peer = await Peer.from_input_peer_raise(
         user_id, request.channel, message="CHANNEL_PRIVATE", code=406, peer_types=(PeerType.CHANNEL,)
     )
@@ -887,13 +892,16 @@ async def read_channel_history(request: ReadHistory, user_id: int) -> bool:
     if request.max_id <= read_state.last_message_id:
         return True
 
+    participant = await ChatParticipant.get_or_none(user_id=user_id, channel_id=peer.channel_id)
+    message_query = Q(id__lte=request.max_id, peer=peer)
+    message_query = append_channel_min_message_id_to_query_maybe(
+        peer.channel, message_query, participant, user_id,
+    )
     unread_ids = cast(
         tuple[int, int] | None,
         cast(
             object,
-            await MessageRef.filter(
-                id__lte=request.max_id, peer=peer,
-            ).order_by("-id").first().values_list("id", "content_id")
+            await MessageRef.filter(message_query).order_by("-id").first().values_list("id", "content_id")
         )
     )
     if not unread_ids:
@@ -911,6 +919,10 @@ async def read_channel_history(request: ReadHistory, user_id: int) -> bool:
     await ReadHistoryChunk.create(user_id=user_id, peer=peer, read_content_id=content_id)
 
     await upd.update_read_history_inbox_channel(user_id, peer.channel_id, unread_max_id, unread_count)
+
+    if peer.channel.forum:
+        from piltover.app.utils.forum_topics import update_forum_topic_read_state
+        await update_forum_topic_read_state(user_id, peer.channel, peer, unread_max_id)
 
     prev_last_id = cast(
         int | None,

@@ -21,7 +21,8 @@ from piltover.tl import Updates, ChatInviteAlready, ChatInvite as TLChatInvite, 
     MessageActionChatJoinedByRequest, MessageActionChatAddUser, ChatAdminWithInvites, UpdatePendingJoinRequests
 from piltover.tl.functions.messages import GetExportedChatInvites, GetAdminsWithInvites, GetChatInviteImporters, \
     ImportChatInvite, CheckChatInvite, ExportChatInvite, GetExportedChatInvite, DeleteRevokedExportedChatInvites, \
-    HideChatJoinRequest, HideAllChatJoinRequests, ExportChatInvite_133, ExportChatInvite_134, EditExportedChatInvite
+    HideChatJoinRequest, HideAllChatJoinRequests, ExportChatInvite_133, ExportChatInvite_134, EditExportedChatInvite, \
+    DeleteExportedChatInvite
 from piltover.tl.types.messages import ExportedChatInvites, ChatAdminsWithInvites, ChatInviteImporters, \
     ExportedChatInvite
 from piltover.tl.base import ChatInviteImporter as TLChatInviteImporterBase, \
@@ -320,9 +321,25 @@ async def user_join_chat_or_channel(chat_or_channel: ChatBase, user: User, from_
 
     if isinstance(chat_or_channel, Channel):
         await SessionManager.subscribe_to_channel(chat_or_channel.id, [user.id])
+        updates = await upd.update_channel_for_user(chat_or_channel, user.id)
 
-        # TODO: send SERVICE_CHAT_USER_INVITE_JOIN or SERVICE_CHAT_USER_ADD message if channel is a supergroup
-        return await upd.update_channel_for_user(chat_or_channel, user.id)
+        if chat_or_channel.supergroup and not chat_or_channel.channel:
+            channel_peer = await Peer.get(channel_id=chat_or_channel.id).select_related("channel")
+            if from_invite is not None:
+                msg_updates = await send_message_internal(
+                    user, channel_peer, None, None, False,
+                    author=user.id, type=MessageType.SERVICE_CHAT_USER_INVITE_JOIN,
+                    extra_info=MessageActionChatJoinedByLink(inviter_id=cast(int, from_invite.user_id)).write(),
+                )
+            else:
+                msg_updates = await send_message_internal(
+                    user, channel_peer, None, None, False,
+                    author=user.id, type=MessageType.SERVICE_CHAT_USER_ADD,
+                    extra_info=MessageActionChatAddUser(users=[user.id]).write(),
+                )
+            updates.updates.extend(msg_updates.updates)
+
+        return updates
 
     chat_peers = {
         peer.owner_id: peer
@@ -359,8 +376,8 @@ async def import_chat_invite(request: ImportChatInvite, user_id: int) -> Updates
     if invite.request_needed or isinstance(channel_maybe, Channel) and channel_maybe.join_request:
         query = Chat.query(invite.chat_or_channel, "invite") & Q(user_id=user_id)
         if not await ChatInviteRequest.filter(query).exists():
-            # TODO: send updatePendingJoinRequests
             await ChatInviteRequest.create(user_id=user_id, invite=invite)
+            await broadcast_join_request_updates(invite.chat_or_channel)
         raise ErrorRpc(error_code=400, error_message="INVITE_REQUEST_SENT")
 
     user = await User.get(id=user_id).only("id")
@@ -440,6 +457,16 @@ async def delete_revoked_exported_chat_invites(request: DeleteRevokedExportedCha
     return True
 
 
+async def broadcast_join_request_updates(chat: ChatBase) -> None:
+    updates = await make_chat_join_request_updates(chat)
+    participants = await ChatParticipant.filter(
+        **Chat.or_channel(chat), left=False, admin_rights__gt=0,
+    ).only("user_id", "admin_rights")
+    for participant in participants:
+        if chat.admin_has_permission(participant, ChatAdminRights.INVITE_USERS):
+            await SessionManager.send(updates, participant.user_id)
+
+
 async def make_chat_join_request_updates(chat: ChatBase) -> Updates:
     pending = await ChatInviteRequest.filter(
         Chat.query(chat, "invite")
@@ -484,13 +511,15 @@ async def add_requested_users_to_chat(user: User, chat: ChatBase, requests: list
     peers_to_create: list[Peer] = []
     participants_to_create: list[ChatParticipant] = []
     for request in requests:
-        peers_to_create.append(Peer(owner=request.user, type=peer_type, **Chat.or_channel(chat)))
+        if isinstance(chat, Chat):
+            peers_to_create.append(Peer(owner=request.user, type=peer_type, **Chat.or_channel(chat)))
         participants_to_create.append(ChatParticipant(
             user=request.user, inviter_id=request.invite.user_id, invite=request.invite, **Chat.or_channel(chat),
             chat_channel_id=chat.make_id(),
         ))
 
-    await Peer.bulk_create(peers_to_create, ignore_conflicts=True)
+    if peers_to_create:
+        await Peer.bulk_create(peers_to_create, ignore_conflicts=True)
     await ChatParticipant.bulk_create(participants_to_create, ignore_conflicts=True)
     await ChatInviteRequest.delete_for_chat_or_channel(chat, user_id__in=requested_users)
 
@@ -498,9 +527,19 @@ async def add_requested_users_to_chat(user: User, chat: ChatBase, requests: list
         chat_peers: list[Peer] = await Peer.filter(Chat.query(chat))
         await upd.update_chat_participants(chat, chat_peers)
     elif isinstance(chat, Channel):
-        # TODO: send SERVICE_CHAT_USER_INVITE_JOIN and SERVICE_CHAT_USER_REQUEST_JOIN
         await SessionManager.subscribe_to_channel(chat.id, requested_users)
-        return await upd.update_channel_for_user(chat, user.id)
+        updates = await upd.update_channel_for_user(chat, user.id)
+        if chat.supergroup and not chat.channel:
+            channel_peer = await Peer.get(channel_id=chat.id).select_related("channel")
+            for request in requests:
+                await Dialog.create_or_unhide(request.user.id, channel_peer)
+                msg_updates = await send_message_internal(
+                    user, channel_peer, None, None, False,
+                    author=request.user, type=MessageType.SERVICE_CHAT_USER_INVITE_JOIN,
+                    extra_info=MessageActionChatJoinedByLink(inviter_id=cast(int, request.invite.user_id)).write(),
+                )
+                updates.updates.extend(msg_updates.updates)
+        return updates
     else:
         raise Unreachable(f"Got invalid chat: {chat}")
 
@@ -642,4 +681,23 @@ async def edit_exported_chat_invite(request: EditExportedChatInvite, user_id: in
     )
 
 
-# TODO: DeleteExportedChatInvite
+@handler.on_request(DeleteExportedChatInvite, ReqHandlerFlags.DONT_FETCH_USER)
+async def delete_exported_chat_invite(request: DeleteExportedChatInvite, user_id: int) -> bool:
+    peer = await Peer.from_input_peer_raise(user_id, request.peer, allow_migrated_chat=True)
+    if peer.type not in (PeerType.CHAT, PeerType.CHANNEL):
+        raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
+
+    participant = await peer.chat_or_channel.get_participant(user_id)
+    if participant is None or not peer.chat_or_channel.admin_has_permission(participant, ChatAdminRights.INVITE_USERS):
+        raise ErrorRpc(error_code=400, error_message="CHAT_ADMIN_REQUIRED")
+
+    if (invite_hash := _get_invite_hash_from_link(request.link)) is None:
+        raise ErrorRpc(error_code=400, error_message="INVITE_HASH_EXPIRED")
+    invite = await ChatInvite.get_or_none(
+        ChatInvite.query_from_link_hash(invite_hash.strip()) & Chat.query(peer.chat_or_channel)
+    )
+    if invite is None:
+        raise ErrorRpc(error_code=400, error_message="INVITE_HASH_EXPIRED")
+
+    await invite.delete()
+    return True

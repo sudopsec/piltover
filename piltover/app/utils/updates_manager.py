@@ -6,7 +6,7 @@ from typing import Collection, cast
 from loguru import logger
 from tortoise.transactions import in_transaction
 
-from piltover.context import request_ctx
+from piltover.context import try_get_request_ctx
 from piltover.db.enums import UpdateType, PeerType, ChannelUpdateType, NotifySettingsNotPeerType
 from piltover.db.models import User, State, Update, MessageDraft, Peer, Dialog, Chat, Presence, \
     ChatParticipant, ChannelUpdate, Channel, Poll, DialogFolder, EncryptedChat, UserAuthorization, SecretUpdate, \
@@ -30,7 +30,8 @@ from piltover.tl import Updates, UpdateNewMessage, UpdateMessageID, UpdateReadHi
     UpdateUserPhone, UpdateNotifySettings, UpdateSavedGifs, UpdateBotInlineQuery, UpdateRecentStickers, \
     UpdateFavedStickers, UpdateSavedDialogPinned, UpdatePinnedSavedDialogs, UpdatePrivacy, \
     UpdateChannelReadMessagesContents, UpdateChannelAvailableMessages, UpdatePhoneCall, UpdatePhoneCallSignalingData, \
-    UpdateReadChannelOutbox, UpdatePinnedChannelMessages, UpdateUserEmojiStatus, EmojiStatusEmpty, PeerChat, \
+    UpdateReadChannelOutbox, UpdateReadChannelDiscussionInbox, UpdateReadChannelDiscussionOutbox, \
+    UpdatePinnedChannelMessages, UpdateUserEmojiStatus, EmojiStatusEmpty, PeerChat, \
     UpdateStarsBalance, StarsAmount, UpdateGroupCall, UpdateGroupCallParticipants, UpdateGroupCallConnection, \
     InputGroupCall
 from piltover.tl.layer_info import layer
@@ -154,7 +155,8 @@ async def send_message(
             else:
                 result = updates
 
-        ignore_auth_id = request_ctx.get().auth_id if ignore_current and target_user_id == current_user_id else None
+        ctx = try_get_request_ctx()
+        ignore_auth_id = ctx.auth_id if ctx and ignore_current and target_user_id == current_user_id else None
         outbound.append((updates, target_user_id, ignore_auth_id))
 
     if updates_to_create:
@@ -191,7 +193,7 @@ async def send_message_channel(user_id: int, channel: Channel, message: MessageR
         replies=message_for_user.replies,
     )
 
-    ctx = request_ctx.get()
+    ctx = try_get_request_ctx()
     sender_auth_id = ctx.auth_id if ctx else None
 
     await SessionManager.send(
@@ -1210,6 +1212,75 @@ async def update_read_history_inbox_channel(
     return updates
 
 
+async def update_read_channel_discussion_inbox(
+        user_id: int,
+        channel: Channel,
+        broadcast_post_id: int,
+        discussion_top_msg_id: int,
+        read_max_id: int,
+) -> Updates:
+    pts = await State.add_pts(user_id, 1)
+    await Update.create(
+        user_id=user_id,
+        update_type=UpdateType.READ_INBOX_CHANNEL,
+        pts=pts,
+        pts_count=1,
+        related_id=channel.id,
+        additional_data=[discussion_top_msg_id, read_max_id, broadcast_post_id],
+    )
+
+    ucc = UsersChatsChannels()
+    ucc.add_channel(channel.id)
+    users, chats, channels = await ucc.resolve()
+
+    updates = UpdatesWithDefaults(
+        updates=[
+            UpdateReadChannelDiscussionInbox(
+                channel_id=channel.make_id(),
+                top_msg_id=discussion_top_msg_id,
+                read_max_id=read_max_id,
+                broadcast_id=channel.make_id(),
+                broadcast_post=broadcast_post_id,
+            ),
+        ],
+        users=users,
+        chats=[*chats, *channels],
+    )
+    await SessionManager.send(updates, user_id)
+    return updates
+
+
+async def update_read_channel_discussion_outbox(
+        channel: Channel,
+        discussion_top_msg_id: int,
+        read_max_id: int,
+        author_id: int,
+) -> None:
+    pts = await State.add_pts(author_id, 1)
+    await Update.create(
+        user_id=author_id,
+        update_type=UpdateType.READ_OUTBOX_CHANNEL,
+        pts=pts,
+        pts_count=1,
+        related_id=channel.id,
+        additional_data=[discussion_top_msg_id, read_max_id],
+    )
+
+    channels = [await channel.to_tl()]
+    updates = UpdatesWithDefaults(
+        updates=[
+            UpdateReadChannelDiscussionOutbox(
+                channel_id=channel.make_id(),
+                top_msg_id=discussion_top_msg_id,
+                read_max_id=read_max_id,
+            ),
+        ],
+        users=[],
+        chats=channels,
+    )
+    await SessionManager.send(updates, author_id)
+
+
 async def update_read_history_outbox_channel(channel: Channel, max_ids: dict[int, int]) -> None:
     updates_to_create = []
 
@@ -1935,6 +2006,11 @@ async def bot_precheckout_query(bot_id: int, query: BotPrecheckoutQuery) -> None
 
     await SessionManager.send(updates, bot_id)
 
+    from piltover.app.utils.bot_api import bot_api_updates
+    bot_user = await User.get_or_none(id=bot_id)
+    if bot_user is not None and bot_user.bot:
+        await bot_api_updates.enqueue_pre_checkout_query(bot_user, query)
+
 
 async def bot_callback_query(bot_id: int, query: CallbackQuery) -> None:
     new_pts = await State.add_pts(bot_id, 1)
@@ -1968,6 +2044,11 @@ async def bot_callback_query(bot_id: int, query: CallbackQuery) -> None:
     )
 
     await SessionManager.send(updates, bot_id)
+
+    from piltover.app.utils.bot_api import bot_api_updates
+    bot_user = await User.get_or_none(id=bot_id)
+    if bot_user is not None and bot_user.bot:
+        await bot_api_updates.enqueue_callback_query(bot_user, query)
 
 
 async def update_user_phone(user: User) -> Updates:

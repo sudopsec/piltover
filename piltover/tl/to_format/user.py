@@ -65,10 +65,7 @@ class UserToFormat(types.UserToFormatInternal):
             mutual_contact=is_contact and current_is_contact,
             emoji_status=emoji_status,
 
-            # TODO: this is True only because custom emojis are not available (like at all, missing in emoji list)
-            #  for non-premium users.
-            #  Need to figure out how official telegram allows custom emojis to be visible to non-premium users.
-            premium=not self.bot,
+            premium=False,
         ).write(ctx)
 
     def write(self, ctx: SerializationContext = EMPTY_SERIALIZATION_CONTEXT) -> bytes:

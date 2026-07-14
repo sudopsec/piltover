@@ -9,10 +9,12 @@ from PIL import Image
 from fastrand import xorshift128plus_bytes
 from pyrogram.enums import MessageEntityType
 from pyrogram.errors import NotAcceptable, Forbidden
-from pyrogram.raw.functions.channels import GetMessages as GetMessagesChannel, SetDiscussionGroup
+from pyrogram.errors import MsgIdInvalid
+from pyrogram.raw.functions.channels import GetMessages as GetMessagesChannel, SetDiscussionGroup, \
+    DeleteMessages as ChannelDeleteMessages, ReadHistory as ChannelReadHistory
 from pyrogram.raw.functions.messages import GetHistory, DeleteHistory, GetMessages, GetUnreadMentions, ReadMentions, \
     GetSearchResultsCalendar, EditMessage, DeleteScheduledMessages, SetHistoryTTL, SaveDraft, GetMessagesViews, \
-    SendMessage, ForwardMessages
+    SendMessage, ForwardMessages, ReadDiscussion, GetDiscussionMessage
 from pyrogram.raw.types import InputPeerSelf, InputMessageID, InputMessageReplyTo, InputChannel, \
     InputMessagesFilterPhotoVideo, UpdateNewMessage, UpdateDeleteScheduledMessages, UpdateDeleteMessages, \
     UpdateNewChannelMessage, UpdateEditChannelMessage, UpdateDraftMessage, DraftMessage, DraftMessageEmpty, Updates, \
@@ -1182,8 +1184,12 @@ async def test_send_message_to_channel_with_discussion_group(exit_stack: AsyncEx
 
     async for msg in client.get_chat_history(group.id, limit=1):
         assert msg.text == message.text
-        assert msg.forward_from_message_id == message.id
+        assert msg.sender_chat == channel
+        assert msg.from_user is None
+        assert not msg.outgoing
+        assert msg.views is None
         assert msg.forward_from_chat == channel
+        assert msg.forward_from_message_id == message.id
         break
     else:
         assert False
@@ -1210,6 +1216,8 @@ async def test_send_message_to_channel_comments(exit_stack: AsyncExitStack) -> N
     assert len([m async for m in client.get_discussion_replies(discussion_message.chat.id, discussion_message.id)]) == 0
 
     comment = await discussion_message.reply("idk")
+    assert comment.reply_to_message_id == discussion_message.id
+    assert comment.reply_to_top_message_id == discussion_message.id
 
     async for msg in client.get_chat_history(group.id, limit=1):
         assert msg.text == comment.text
@@ -1226,6 +1234,66 @@ async def test_send_message_to_channel_comments(exit_stack: AsyncExitStack) -> N
         break
     else:
         assert False
+
+    result = await client.invoke(ReadDiscussion(
+        peer=await client.resolve_peer(channel.id),
+        msg_id=message.id,
+        read_max_id=comment.id,
+    ))
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_delete_discussion_mirror_unlinks_channel_post(exit_stack: AsyncExitStack) -> None:
+    client: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
+
+    channel = await client.create_channel("idk channel")
+    group = await client.create_supergroup("idk group")
+
+    await client.invoke(SetDiscussionGroup(
+        broadcast=await client.resolve_peer(channel.id),
+        group=await client.resolve_peer(group.id),
+    ))
+
+    async with client.expect_updates_m(UpdateNewChannelMessage, timeout_per_update=1):
+        message = await client.send_message(channel.id, "test message")
+
+    await client.expect_updates(UpdateEditChannelMessage, timeout_per_update=1)
+
+    discussion_message = await client.get_discussion_message(channel.id, message.id)
+
+    mirror_id = None
+    async for msg in client.get_chat_history(group.id):
+        if msg.text == message.text:
+            mirror_id = msg.id
+            break
+    assert mirror_id is not None
+
+    await client.invoke(ChannelDeleteMessages(
+        channel=await client.resolve_peer(group.id),
+        id=[mirror_id],
+    ))
+
+    with pytest.raises(MsgIdInvalid):
+        await client.invoke(GetDiscussionMessage(
+            peer=await client.resolve_peer(channel.id),
+            msg_id=message.id,
+        ))
+
+    await client.invoke(ChannelReadHistory(
+        channel=await client.resolve_peer(group.id),
+        max_id=mirror_id,
+    ))
+
+    views = await client.invoke(GetMessagesViews(
+        peer=await client.resolve_peer(channel.id),
+        id=[message.id],
+        increment=False,
+    ))
+    assert len(views.views) == 1
+    assert views.views[0].replies is not None
+    assert views.views[0].replies.comments
+    assert views.views[0].replies.channel_id is not None
 
 
 @pytest.mark.asyncio

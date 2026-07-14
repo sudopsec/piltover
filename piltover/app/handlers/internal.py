@@ -110,24 +110,27 @@ async def create_discussion_thread(request: CreateDiscussionThread) -> TLObject:
             logger.warning(f"Internal channel ({discussion_channel_id}) peer does not exist")
             return TaggedBool(value=False)
 
-        discussion_message, = await message.forward_for_peers(
-            to_peer=discussion_peer,
-            peers=[discussion_peer],
-            fwd_header=await message.create_fwd_header(False),
-            no_forwards=_resolve_noforwards(discussion_peer, None, False),
-            is_forward=True,
+        broadcast_channel = message.peer.channel
+        discussion_content = await message.content.clone_discussion_mirror(
+            discussion_peer, broadcast_channel.id, message,
+        )
+        discussion_message = await MessageRef.create(
+            peer=discussion_peer,
+            content=discussion_content,
             pinned=True,
             is_discussion=True,
         )
+        await discussion_peer.sync_last_message()
 
         logger.debug(f"Created discussion message {discussion_message.id} for message {message.id}")
 
         message.discussion = discussion_message
+        message.discussion_top_message_id = discussion_message.id
         message.content.edit_date = datetime.now(UTC)
         message.content.edit_hide = True
         message.content.version += 1
         message.content.replies_version += 1
-        await message.save(update_fields=["discussion_id"])
+        await message.save(update_fields=["discussion_id", "discussion_top_message_id"])
         await message.content.save(update_fields=["edit_date", "edit_hide", "version", "replies_version"])
 
     await upd.send_messages_channel([discussion_message], discussion_peer.channel)

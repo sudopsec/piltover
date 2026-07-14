@@ -360,6 +360,63 @@ async def test_bot_payment_form_is_single_use(client_with_auth) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stars_transaction_uses_client_compatible_constructor(client_with_auth) -> None:
+    from io import BytesIO
+
+    from piltover.tl import TLObject
+    from piltover.tl.serialization_context import SerializationContext
+
+    client = await client_with_auth()
+    user = await User.get(phone_number=client.phone_number)
+    await stars.grant_stars(user.id, 4)
+
+    tx = await StarsTransaction.filter(user_id=user.id).first()
+    assert tx is not None
+
+    ucc = UsersChatsChannels()
+    tl_tx = tx.to_tl(ucc)
+    ctx = SerializationContext(auth_id=0, user_id=user.id, layer=201)
+    data = tl_tx.write(ctx)
+    assert data.startswith(b"\xb0\x9e\x65\x13")
+    parsed = TLObject.read(BytesIO(data))
+    assert parsed.stars.amount == 4
+
+
+@pytest.mark.asyncio
+async def test_stars_status_serializes_for_layer_201(client_with_auth) -> None:
+    from io import BytesIO
+
+    from piltover.tl import TLObject
+    from piltover.tl.serialization_context import SerializationContext
+
+    client = await client_with_auth()
+    user = await User.get(phone_number=client.phone_number)
+
+    await stars.grant_stars(user.id, 11)
+
+    status = await stars.build_stars_status(
+        user.id,
+        history=(await stars.fetch_transactions(
+            user.id, inbound=True, outbound=True, ascending=False, offset="", limit=50,
+        ))[0],
+    )
+    assert status.history is not None
+    assert len(status.history) == 1
+    assert status.users == []
+    assert status.chats == []
+
+    ctx = SerializationContext(auth_id=0, user_id=user.id, layer=201)
+    status_data = status.write(ctx)
+    parsed = TLObject.read(BytesIO(status_data))
+    assert parsed.history is not None
+    assert len(parsed.history) == 1
+    assert parsed.users == []
+    assert parsed.chats == []
+    assert parsed.history[0].stars.amount == 11
+    assert parsed.history[0].write(ctx).startswith(b"\xb0\x9e\x65\x13")
+
+
+@pytest.mark.asyncio
 async def test_fetch_transactions_pagination_is_stable_for_same_timestamp(client_with_auth) -> None:
     client = await client_with_auth()
     user = await User.get(phone_number=client.phone_number)

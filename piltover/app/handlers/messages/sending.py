@@ -288,9 +288,13 @@ async def send_message_internal(
     )
 
     if reply_to_top is not None and reply_to_top.is_discussion:
-        await MessageContent.filter(
-            messagerefs__discussion_id=reply_to_top.id,
-        ).update(replies_version=F("replies_version") + 1)
+        channel_post = await MessageRef.get_or_none(
+            discussion_id=reply_to_top.id,
+        ).only("content_id")
+        if channel_post is not None:
+            await MessageContent.filter(id=channel_post.content_id).update(
+                replies_version=F("replies_version") + 1,
+            )
 
     if schedule:
         message = messages[peer]

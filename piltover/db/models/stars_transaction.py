@@ -94,6 +94,11 @@ class StarsTransaction(Model):
     ) -> TLStarsTransaction:
         title = self.title or "Telegram Stars"
         description = self.description or title
+        transaction_date = None
+        transaction_url = None
+        if self.msg_id is not None:
+            transaction_date = self.date
+            transaction_url = f"https://t.me/$/stars/transactions/{self.transaction_id}"
         return TLStarsTransaction(
             id=self.transaction_id,
             stars=self.to_stars_amount(),
@@ -103,6 +108,8 @@ class StarsTransaction(Model):
             description=description,
             gift=self.gift,
             refund=self.refund,
+            transaction_date=transaction_date,
+            transaction_url=transaction_url,
             msg_id=self.msg_id,
             bot_payload=self.bot_payload,
         )

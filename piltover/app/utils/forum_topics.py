@@ -211,6 +211,26 @@ async def enable_forum(channel: Channel, peer: Peer, user_id: int) -> None:
     await upd.update_channel(channel)
 
 
+async def update_forum_topic_read_state(
+        user_id: int, channel: Channel, peer: Peer, read_max_id: int,
+) -> None:
+    read_msg = await MessageRef.get_or_none(id=read_max_id, peer=peer).only("top_message_id")
+    if read_msg is None:
+        return
+
+    top_msg_id = read_msg.top_message_id or read_max_id
+    topic = await ForumTopic.get_or_none(channel=channel, top_message_id=top_msg_id, deleted=False)
+    if topic is None:
+        return
+
+    state, created = await ForumTopicReadState.get_or_create(
+        user_id=user_id, topic=topic, defaults={"last_message_id": read_max_id},
+    )
+    if not created and read_max_id > state.last_message_id:
+        state.last_message_id = read_max_id
+        await state.save(update_fields=["last_message_id"])
+
+
 def build_topics_filter(
         channel: Channel, q: str | None, offset_topic: int, include_hidden: bool,
 ) -> Q:

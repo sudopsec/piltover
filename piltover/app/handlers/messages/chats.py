@@ -14,6 +14,11 @@ from piltover.db.enums import PeerType, MessageType, PrivacyRuleKeyType, ChatBan
 from piltover.db.models import User, Peer, Chat, File, UploadingFile, ChatParticipant, PrivacyRule, \
     ChatInviteRequest, ChatInvite, Channel, Dialog, Presence, AdminLogEntry, MessageRef, MessageContent
 from piltover.db.models.channel import CREATOR_RIGHTS
+
+BASIC_GROUP_ADMIN_RIGHTS = (
+    ChatAdminRights.CHANGE_INFO | ChatAdminRights.DELETE_MESSAGES | ChatAdminRights.BAN_USERS
+    | ChatAdminRights.INVITE_USERS | ChatAdminRights.PIN_MESSAGES
+)
 from piltover.db.models.peer import PeerChatT
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc, Unreachable
@@ -465,7 +470,7 @@ async def edit_chat_admin(request: EditChatAdmin, user_id: int) -> bool:
         admins_count = await ChatParticipant.filter(chat=chat, admin_rights__gt=0).count()
         if admins_count >= APP_CONFIG.basic_group_admin_limit:
             raise ErrorRpc(error_code=400, error_message="USERS_TOO_MUCH")
-        participant.admin_rights = ChatAdminRights.from_tl(CREATOR_RIGHTS)
+        participant.admin_rights = BASIC_GROUP_ADMIN_RIGHTS
     else:
         participant.admin_rights = ChatAdminRights(0)
 
@@ -616,7 +621,9 @@ async def migrate_chat(request: MigrateChat, user_id: int) -> Updates:
 
         await ChatParticipant.bulk_create(participants_to_create)
         await Dialog.bulk_create(dialogs_to_create, ignore_conflicts=True)
-        await Dialog.filter(peer__chat=chat).update(visible=False)
+        chat_peer_ids = await Peer.filter(chat=chat).values_list("id", flat=True)
+        if chat_peer_ids:
+            await Dialog.filter(peer_id__in=chat_peer_ids).update(visible=False)
 
     await SessionManager.subscribe_to_channel(channel.id, [participant.user_id for participant in participants])
 

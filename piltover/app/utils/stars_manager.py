@@ -75,16 +75,12 @@ async def build_stars_status(
         subscriptions_next_offset: str | None = None,
 ) -> StarsStatus:
     balance = await UserStarsBalance.get_or_create_for(wallet_user_id)
-    users: list = []
-    chats: list = []
 
     history_tl = None
     if history is not None:
         ucc = UsersChatsChannels()
         render_ctx = await _stars_render_ctx()
         history_tl = [tx.to_tl(ucc, render_ctx) for tx in history]
-        users, chats_list, channels = await ucc.resolve()
-        chats = [*chats_list, *channels]
 
     return StarsStatus(
         balance=balance.to_stars_amount(),
@@ -92,8 +88,8 @@ async def build_stars_status(
         next_offset=next_offset,
         subscriptions=subscriptions,
         subscriptions_next_offset=subscriptions_next_offset,
-        chats=chats,
-        users=users,
+        chats=[],
+        users=[],
     )
 
 
@@ -110,7 +106,10 @@ async def fetch_transactions(
     if subscription_id is not None:
         return [], None
 
-    limit = min(max(limit, 1), 50)
+    if limit <= 0:
+        limit = 50
+    else:
+        limit = min(limit, 50)
     query = StarsTransaction.filter(user_id=wallet_user_id)
     if inbound and not outbound:
         query = query.filter(inbound=True)

@@ -58,6 +58,24 @@ def append_channel_min_message_id_to_query_maybe(
     return query
 
 
+async def unlink_channel_posts_for_deleted_discussions(discussion_message_ids: list[int]) -> None:
+    if not discussion_message_ids:
+        return
+
+    import piltover.app.utils.updates_manager as upd
+
+    channel_posts = await MessageRef.filter(
+        Q(discussion_id__in=discussion_message_ids)
+        | Q(discussion_top_message_id__in=discussion_message_ids),
+    ).select_related("peer__channel", "content", "content__post_info")
+
+    for post in channel_posts:
+        post.content.replies_version += 1
+        post.content.version += 1
+        await post.content.save(update_fields=["replies_version", "version"])
+        await upd.edit_message_channel(post.peer.channel, post)
+
+
 class MessageRef(Model):
     id: int = fields.BigIntField(primary_key=True)
     content: models.MessageContent = fields.ForeignKeyField("models.MessageContent")
@@ -70,6 +88,7 @@ class MessageRef(Model):
     reply_to: models.MessageRef | None = NullableFKSetNull("models.MessageRef", related_name="reply")
     top_message: models.MessageRef | None = NullableFKSetNull("models.MessageRef", related_name="msg_top_message")
     discussion: models.MessageRef | None = NullableFKSetNull("models.MessageRef", related_name="msg_discussion_message")
+    discussion_top_message_id: int | None = fields.BigIntField(null=True, default=None)
     is_discussion: bool = fields.BooleanField(default=False)
     scheduled_by_user: models.User | None = NullableFK("models.User", related_name="message_scheduled")
 
@@ -176,7 +195,7 @@ class MessageRef(Model):
             mentioned = False
             mention_read = True
 
-        out = user_id == self.content.author_id
+        out = not self.is_discussion and user_id == self.content.author_id
         media_unread = False
         if not out and self.content.media \
                 and self.content.media.file \
@@ -198,7 +217,7 @@ class MessageRef(Model):
 
     def to_tl_common_channel(self) -> ChannelMessageToFormatCommon:
         return ChannelMessageToFormatCommon(
-            author_id=self.content.author_id,
+            author_id=0 if self.is_discussion else self.content.author_id,
             id=self.id,
             channel_id=self.peer.channel_id,
             from_scheduled=self.from_scheduled or self.content.scheduled_date is not None,
@@ -332,7 +351,7 @@ class MessageRef(Model):
         ]
 
     async def to_tl_maybecached(self, user_id: int, with_reactions: bool = True) -> TLMessageBase:
-        if self.discussion_id is not None or self.is_discussion:
+        if self.has_discussion_thread():
             ref, content, replies = await Cache.obj.multi_get([
                 self.cache_key(user_id), self.content.cache_key(), self.cache_key_replies(),
             ])
@@ -708,6 +727,8 @@ class MessageRef(Model):
             self.top_message_id is not None
             and self.reply_to_id == self.top_message_id
             and not self.is_discussion
+            and self.peer.type is PeerType.CHANNEL
+            and self.peer.channel.forum
         )
 
         return MessageReplyHeader(
@@ -940,8 +961,14 @@ class MessageRef(Model):
 
         return recent_repliers or None
 
+    def discussion_thread_id(self) -> int | None:
+        return self.discussion_id or self.discussion_top_message_id
+
+    def has_discussion_thread(self) -> bool:
+        return self.is_discussion or self.discussion_thread_id() is not None
+
     async def to_tl_replies(self, with_recent: bool = False) -> TLMessageReplies | None:
-        if not self.is_discussion and self.discussion_id is None:
+        if not self.has_discussion_thread():
             return None
 
         cache_key = self.cache_key_replies()
@@ -965,8 +992,12 @@ class MessageRef(Model):
                 replies_pts=0,
                 max_id=max_id,
             )
-        elif self.discussion_id is not None:
-            query = Q(reply_to_id=self.discussion_id, top_message_id=self.discussion_id, join_type=Q.OR)
+        elif (discussion_thread_id := self.discussion_thread_id()) is not None:
+            query = Q(
+                reply_to_id=discussion_thread_id,
+                top_message_id=discussion_thread_id,
+                join_type=Q.OR,
+            )
             replies_info = await models.MessageRef.filter(query).annotate(
                 count=Count("id"), max_id=Max("id"),
             ).first().values_list("count", "max_id")
@@ -976,13 +1007,9 @@ class MessageRef(Model):
                 replies_count = 0
                 max_id = None
 
-            discussion_channel_id = cast(
-                int | None,
-                cast(
-                    object,
-                    await models.MessageRef.get(id=self.discussion_id).values_list("peer__channel_id", flat=True)
-                )
-            )
+            linked_discussion_id = self.peer.channel.discussion_id
+            if linked_discussion_id is None:
+                return None
 
             recent_repliers = None
             if with_recent:
@@ -992,7 +1019,7 @@ class MessageRef(Model):
                 replies=replies_count,
                 replies_pts=0,
                 comments=True,
-                channel_id=models.Channel.make_id_from(discussion_channel_id) if discussion_channel_id else None,
+                channel_id=models.Channel.make_id_from(linked_discussion_id),
                 max_id=max_id,
                 recent_repliers=recent_repliers or None,
             )
@@ -1008,7 +1035,7 @@ class MessageRef(Model):
         cache_keys = [
             ref.cache_key_replies()
             for ref in refs
-            if ref.is_discussion or ref.discussion_id is not None
+            if ref.has_discussion_thread()
         ]
 
         if not cache_keys:
@@ -1017,10 +1044,10 @@ class MessageRef(Model):
         cached_replies = await Cache.obj.multi_get(cache_keys)
 
         ids_to_get = set()
-        channel_ids_to_get = set()
+        broadcast_channel_ids = set()
         cache_idx = 0
         for ref in refs:
-            if not ref.is_discussion and ref.discussion_id is None:
+            if not ref.has_discussion_thread():
                 continue
             cached = cached_replies[cache_idx]
             cache_idx += 1
@@ -1028,9 +1055,9 @@ class MessageRef(Model):
                 continue
             if ref.is_discussion:
                 ids_to_get.add(ref.id)
-            elif ref.discussion_id is not None:
-                ids_to_get.add(ref.discussion_id)
-                channel_ids_to_get.add(ref.discussion_id)
+            elif (discussion_thread_id := ref.discussion_thread_id()) is not None:
+                ids_to_get.add(discussion_thread_id)
+                broadcast_channel_ids.add(ref.peer.channel_id)
             else:
                 raise Unreachable
 
@@ -1047,18 +1074,19 @@ class MessageRef(Model):
             )
         }
 
-        discussion_channel_ids: dict[int, int] = {
-            msg_id: channel_id
-            for msg_id, channel_id in await models.MessageRef.filter(
-                id__in=channel_ids_to_get,
-            ).values_list("id", "peer__channel_id")
+        linked_discussion_groups: dict[int, int] = {
+            broadcast_id: discussion_id
+            for broadcast_id, discussion_id in await models.Channel.filter(
+                id__in=broadcast_channel_ids,
+            ).values_list("id", "discussion_id")
+            if discussion_id is not None
         }
 
         to_cache = []
         replies = []
         cache_idx = 0
         for ref in refs:
-            if not ref.is_discussion and ref.discussion_id is None:
+            if not ref.has_discussion_thread():
                 replies.append(None)
                 continue
             cache_key = cache_keys[cache_idx]
@@ -1075,9 +1103,13 @@ class MessageRef(Model):
                     replies_pts=0,
                     max_id=max_id,
                 )
-            elif ref.discussion_id is not None:
-                replies_count, max_id = replies_stats.get(ref.discussion_id, (0, None))
-                discussion_channel_id = discussion_channel_ids.get(ref.discussion_id)
+            elif (discussion_thread_id := ref.discussion_thread_id()) is not None:
+                linked_discussion_id = linked_discussion_groups.get(ref.peer.channel_id)
+                if linked_discussion_id is None:
+                    replies.append(None)
+                    continue
+
+                replies_count, max_id = replies_stats.get(discussion_thread_id, (0, None))
 
                 recent_repliers = None
                 if with_recent:
@@ -1087,7 +1119,7 @@ class MessageRef(Model):
                     replies=replies_count,
                     replies_pts=0,
                     comments=True,
-                    channel_id=models.Channel.make_id_from(discussion_channel_id) if discussion_channel_id else None,
+                    channel_id=models.Channel.make_id_from(linked_discussion_id),
                     max_id=max_id,
                     recent_repliers=recent_repliers,
                 )

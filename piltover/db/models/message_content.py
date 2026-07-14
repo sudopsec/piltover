@@ -437,7 +437,7 @@ class MessageContent(Model):
                     from_user = self.author
                 from_name = self.author.first_name
 
-        saved_peer = ref.peer if to_self or discussion else None
+        saved_peer = ref.peer if to_self else None
         if saved_peer is not None and saved_peer.type is PeerType.USER:
             peer_ = ref.peer
             if not await models.PrivacyRule.has_access_to(peer_.owner_id, peer_.user_id, PrivacyRuleKeyType.FORWARDS):
@@ -455,7 +455,7 @@ class MessageContent(Model):
             channel_post_author=channel_post_author,
 
             saved_peer=saved_peer,
-            saved_id=ref.id if to_self or discussion else None,
+            saved_id=ref.id if to_self else None,
             saved_from=self.author if to_self else None,
             saved_name=self.author.first_name if to_self else None,
             saved_date=self.date if to_self else None,
@@ -559,6 +559,36 @@ class MessageContent(Model):
 
         return fwd_headers
 
+    async def clone_discussion_mirror(
+            self, related_peer: models.Peer, broadcast_channel_id: int,
+            channel_post_ref: models.MessageRef,
+    ) -> MessageContent:
+        fwd_header = await self.create_fwd_header(channel_post_ref, to_self=False, discussion=True)
+
+        content = await models.MessageContent.create(
+            message=self.message,
+            entities=self.entities,
+            date=self.date,
+            type=MessageType.REGULAR,
+            author=None,
+            media=self.media,
+            media_group_id=self.media_group_id,
+            channel_post=False,
+            post_author=self.post_author,
+            fwd_header=fwd_header,
+            send_as_channel_id=broadcast_channel_id,
+            no_forwards=self.no_forwards,
+            can_see_reactions_list=related_peer.can_see_reactions_list(),
+        )
+
+        related_user_ids: set[int] = set()
+        related_chat_ids: set[int] = set()
+        related_channel_ids: set[int] = set()
+        content._fill_related(related_user_ids, related_chat_ids, related_channel_ids, related_peer)
+        await self._create_related(content, related_user_ids, related_chat_ids, related_channel_ids)
+
+        return content
+
     @classmethod
     async def create_for_peer(cls, related_peer: models.Peer, **message_kwargs) -> MessageContent:
         related_user_ids: set[int] = set()
@@ -590,7 +620,7 @@ class MessageContent(Model):
         if related_peer is not None:
             self._fill_related_peer(related_peer, user_ids, chat_ids, channel_ids)
 
-        if not self.channel_post and not self.anonymous and self.author_id is not None:
+        if not self.channel_post and not self.anonymous and self.author_id:
             user_ids.add(self.author_id)
         if self.send_as_channel_id is not None:
             channel_ids.add(self.send_as_channel_id)

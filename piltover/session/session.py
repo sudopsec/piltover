@@ -320,7 +320,9 @@ class Session:
             await AuthKey.get_or_none(id=self.auth_data.perm_auth_key_id).values_list("layer", flat=True),
         )
         if perm_key_layer is not None:
-            self.layer = perm_key_layer
+            from piltover.tl.layer_info import layer as max_layer
+
+            self.layer = min(perm_key_layer, max_layer)
 
     def _reset_auth(self) -> None:
         piltover.session.SessionManager.broker.unsubscribe_auth(self.auth_id, self)
