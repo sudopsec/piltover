@@ -19,7 +19,7 @@ CHAT_SELECT_RELATED = ("photo",)
 CHANNEL_SELECT_RELATED = ("photo",)
 
 USER_SELECT_ONLY = (
-    "id", "version", "bot", "accent_color_id", "profile_color_id", "first_name", "last_name", "phone_number",
+    "id", "version", "bot", "verified", "accent_color_id", "profile_color_id", "first_name", "last_name", "phone_number",
     "lang_code",
 
     "background_emojis__id", "background_emojis__accent_emoji_id", "background_emojis__profile_emoji_id",
@@ -34,7 +34,7 @@ CHAT_SELECT_ONLY = (
     "photo__id", "photo__photo_stripped",
 )
 CHANNEL_SELECT_ONLY = (
-    "id", "version", "deleted", "photo_id", "name", "accent_color_id", "profile_color_id", "accent_emoji_id",
+    "id", "version", "deleted", "verified", "photo_id", "name", "accent_color_id", "profile_color_id", "accent_emoji_id",
     "profile_emoji_id", "created_at", "creator_id", "channel", "supergroup", "signatures", "discussion_id",
     "is_discussion", "slowmode_seconds", "no_forwards", "join_to_send", "join_request", "forum", "banned_rights",
     "nojoin_allow_view",

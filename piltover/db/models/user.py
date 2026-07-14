@@ -205,7 +205,7 @@ class User(Model):
             profile_color=profile_color,
             emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
             last_seen=presence_last_seen,
-            verified=self.verified,
+            verified=getattr(self, "verified", False),
         )
 
         await Cache.obj.set(cache_key, result)
@@ -367,7 +367,7 @@ class User(Model):
                 profile_color=profile_color,
                 emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
                 last_seen=int(presence.last_seen.timestamp()) if presence is not None else None,
-                verified=user.verified,
+                verified=getattr(user, "verified", False),
             ))
 
             to_cache.append((user._cache_key(), tl[-1]))

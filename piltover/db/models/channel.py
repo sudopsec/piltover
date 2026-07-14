@@ -236,7 +236,7 @@ class Channel(ChatBase):
                 color=accent_color,
                 profile_color=profile_color,
                 nojoin_allow_view=channel.nojoin_allow_view,
-                verified=channel.verified,
+                verified=getattr(channel, "verified", False),
                 # NOTE: participants_count is not included here since it is present in ChannelFull
             ))
             to_cache.append((channel.cache_key(), tl[-1]))
