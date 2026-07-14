@@ -192,6 +192,8 @@ class User(Model):
             else:
                 emoji_status = await models.UserEmojiStatus.get_or_none(user_id=self.id)
 
+        from piltover.app.utils.spam_block import user_spam_blocked as _user_spam_blocked
+
         result = UserToFormat(
             id=self.id,
             first_name=self.first_name,
@@ -207,7 +209,7 @@ class User(Model):
             emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
             last_seen=presence_last_seen,
             verified=getattr(self, "verified", False),
-            spam_blocked=getattr(self, "spam_blocked", False),
+            spam_blocked=await _user_spam_blocked(self),
         )
 
         await Cache.obj.set(cache_key, result)
@@ -215,6 +217,8 @@ class User(Model):
 
     @classmethod
     async def to_tl_bulk(cls, users: Iterable[models.User]) -> list[TLUserBase]:
+        from piltover.app.utils.spam_block import user_spam_blocked as _user_spam_blocked
+
         if not users:
             return []
 
@@ -370,7 +374,7 @@ class User(Model):
                 emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
                 last_seen=int(presence.last_seen.timestamp()) if presence is not None else None,
                 verified=getattr(user, "verified", False),
-                spam_blocked=getattr(user, "spam_blocked", False),
+                spam_blocked=await _user_spam_blocked(user),
             ))
 
             to_cache.append((user._cache_key(), tl[-1]))

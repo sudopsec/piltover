@@ -1,13 +1,18 @@
 from io import BytesIO
 
 import pytest
-from pyrogram.raw.types import UpdateNewMessage
+from pyrogram.errors import RPCError
+from pyrogram.raw.functions.channels import CreateChannel
+from pyrogram.raw.functions.messages import CreateChat
+from pyrogram.raw.types import InputUser, UpdateNewMessage
 
 from piltover.app.bot_handlers.adminbot.callback_handler import adminbot_callback_query_handler
 from piltover.app.bot_handlers.adminbot.utils import send_bot_message
-from piltover.app.utils.spam_block import check_user_spam_blocked, set_user_spam_blocked
+from piltover.app.handlers.users import _PEER_FULL_USER_ONLY
+from piltover.app.utils.spam_block import check_spam_blocked_creation, check_user_spam_blocked, set_user_spam_blocked, \
+    user_spam_blocked
 from piltover.db.enums import PeerType
-from piltover.db.models import MessageRef, Peer, User
+from piltover.db.models import Chat, ChatParticipant, MessageRef, Peer, User
 from piltover.exceptions import ErrorRpc
 from piltover.tl import Int
 from piltover.tl.serialization_context import SerializationContext
@@ -143,6 +148,54 @@ async def test_check_user_spam_blocked_blocks_reply_to_own_message() -> None:
     with pytest.raises(ErrorRpc) as exc:
         await check_user_spam_blocked(blocked, peer, reply_to_message_id=outgoing_ref.id)
     assert exc.value.error_message == "USER_RESTRICTED"
+
+
+@pytest.mark.asyncio
+async def test_user_spam_blocked_reads_from_db_when_not_prefetched() -> None:
+    user = await User.create(phone_number="900000021", first_name="Blocked", spam_blocked=True)
+    partial = await User.get(id=user.id).only("id")
+
+    assert await user_spam_blocked(partial) is True
+
+
+def test_get_full_user_prefetches_spam_blocked() -> None:
+    assert "user__spam_blocked" in _PEER_FULL_USER_ONLY
+
+
+@pytest.mark.asyncio
+async def test_check_user_spam_blocked_allows_admin_group() -> None:
+    blocked = await User.create(phone_number="900000019", first_name="Blocked", spam_blocked=True)
+    chat = await Chat.create(name="Admin group", creator_id=blocked.id, participants_count=1)
+    peer = await Peer.create(owner_id=blocked.id, chat_id=chat.id, type=PeerType.CHAT)
+    await ChatParticipant.create(user_id=blocked.id, chat=chat, chat_channel_id=chat.make_id())
+
+    await check_user_spam_blocked(blocked, peer)
+
+
+@pytest.mark.asyncio
+async def test_check_spam_blocked_creation_blocks_new_chat() -> None:
+    blocked = await User.create(phone_number="900000020", first_name="Blocked", spam_blocked=True)
+
+    with pytest.raises(ErrorRpc) as exc:
+        await check_spam_blocked_creation(blocked)
+    assert exc.value.error_message == "USER_RESTRICTED"
+
+
+@pytest.mark.asyncio
+async def test_spam_blocked_cannot_create_chat_or_channel() -> None:
+    async with TestClient(phone_number="123456789") as client:
+        user = await User.get(phone_number=client.phone_number)
+        await set_user_spam_blocked(user, True)
+
+        with pytest.raises(RPCError) as exc:
+            await client.invoke(CreateChat(users=[InputUser(user_id=user.id, access_hash=0)], title="blocked"))
+        assert exc.value.ID == "USER_RESTRICTED"
+
+        with pytest.raises(RPCError) as exc:
+            await client.invoke(CreateChannel(title="blocked", about="", megagroup=True))
+        assert exc.value.ID == "USER_RESTRICTED"
+
+        await set_user_spam_blocked(user, False)
 
 
 @pytest.mark.asyncio

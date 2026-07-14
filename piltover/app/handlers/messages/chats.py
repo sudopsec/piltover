@@ -7,6 +7,7 @@ from tortoise.transactions import in_transaction
 
 import piltover.app.utils.updates_manager as upd
 from piltover.app.handlers.messages.sending import send_message_internal
+from piltover.app.utils.spam_block import check_spam_blocked_creation
 from piltover.config import APP_CONFIG
 from piltover.context import request_ctx
 from piltover.db.enums import PeerType, MessageType, PrivacyRuleKeyType, ChatBannedRights, ChatAdminRights, FileType, \
@@ -42,6 +43,9 @@ InputUserWithId = (InputUser, InputPeerUser, InputUserFromMessage, InputPeerUser
 
 @handler.on_request(CreateChat, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def create_chat(request: CreateChat, user_id: int) -> InvitedUsers:
+    creator = await User.get(id=user_id).only("id", "bot", "spam_blocked")
+    await check_spam_blocked_creation(creator)
+
     missing = []
     invited_user_ids = set()
     for invited_user in request.users:

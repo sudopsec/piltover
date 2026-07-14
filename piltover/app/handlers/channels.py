@@ -13,6 +13,7 @@ from piltover.app.handlers.messages.chats import resolve_input_chat_photo
 from piltover.app.handlers.messages.history import format_messages_internal, read_message_contents_internal
 from piltover.app.handlers.messages.invites import user_join_chat_or_channel
 from piltover.app.handlers.messages.sending import send_message_internal
+from piltover.app.utils.spam_block import check_spam_blocked_creation
 from piltover.app.utils.utils import validate_username, check_password_internal
 from piltover.config import APP_CONFIG
 from piltover.context import request_ctx
@@ -171,6 +172,9 @@ async def _add_user_to_channel(channel: Channel, peer_channel: Peer, user_id: in
 
 @handler.on_request(CreateChannel, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def create_channel(request: CreateChannel, user_id: int) -> Updates:
+    creator = await User.get(id=user_id).only("id", "bot", "spam_blocked")
+    await check_spam_blocked_creation(creator)
+
     if not request.broadcast and not request.megagroup:
         raise ErrorRpc(error_code=400, error_message="CHANNELS_TOO_MUCH")
 
