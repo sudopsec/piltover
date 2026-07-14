@@ -934,14 +934,20 @@ async def read_channel_history(request: ReadHistory, user_id: int) -> bool:
         )
     ) or 0
 
-    read_messages_by_user_ids: dict[int, int] = dict(
+    read_messages_by_user_ids: dict[int | None, int] = dict(
         await MessageRef.filter(
             peer=peer, id__gt=prev_last_id, id__lte=unread_max_id, content__author_id__not=user_id,
         ).group_by("content__author_id").annotate(max_id=Max("id")).values_list("content__author_id", "max_id")
     )
     if read_messages_by_user_ids:
         await peer.update_max_read_id(unread_max_id)
-        await upd.update_read_history_outbox_channel(peer.channel, read_messages_by_user_ids)
+        notify_outbox = {
+            author_id: max_id
+            for author_id, max_id in read_messages_by_user_ids.items()
+            if author_id is not None
+        }
+        if notify_outbox:
+            await upd.update_read_history_outbox_channel(peer.channel, notify_outbox)
 
     return True
 

@@ -1282,6 +1282,10 @@ async def update_read_channel_discussion_outbox(
 
 
 async def update_read_history_outbox_channel(channel: Channel, max_ids: dict[int, int]) -> None:
+    max_ids = {user_id: max_id for user_id, max_id in max_ids.items() if user_id is not None}
+    if not max_ids:
+        return
+
     updates_to_create = []
 
     channels = [await channel.to_tl()]

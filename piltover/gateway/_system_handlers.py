@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from piltover.session import Session
 
 
-async def msgs_ack(_1: Client, _2: Message[MsgsAck], _3: Session) -> None:
-    return
+async def msgs_ack(_1: Client, request: Message[MsgsAck], session: Session) -> None:
+    session.ack_outbound(request.obj.msg_ids)
 
 
 async def msgs_state_req(_1: Client, request: Message[MsgsStateReq], _2: Session) -> MsgsStateInfo:
@@ -121,7 +121,13 @@ async def init_connection(client: Client, request: Message[InitConnection], sess
     return await _invoke_inner_query(client, request, session)
 
 
-async def destroy_session(_1: Client, request: Message[DestroySession], _3: Session) -> DestroySessionOk:
+async def destroy_session(_1: Client, request: Message[DestroySession], session: Session) -> DestroySessionOk:
+    from piltover.session import SessionManager
+
+    if session.auth_data is not None and session.auth_data.auth_key_id is not None:
+        uniq_id = session.auth_data.auth_key_id, request.obj.session_id
+        if (stored := SessionManager.sessions.get(uniq_id)) is not None:
+            SessionManager.finalize(stored)
     return DestroySessionOk(session_id=request.obj.session_id)
 
 

@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import hmac
 from asyncio import Queue, Event
-from collections import deque
+from collections import deque, OrderedDict
 from copy import deepcopy
 from time import time
 from typing import cast, TYPE_CHECKING
@@ -50,14 +50,14 @@ class MsgIdValues:
 _RPC_COMPLETION_TRACK_LIMIT = 256
 
 
-# TODO: store sessions in redis or something (with non-acked messages) to be able to restore session after reconnect
 class Session:
     __slots__ = (
         "client", "session_id", "auth_data", "min_msg_id", "user_id", "auth_id", "channel_ids", "auth_loaded_at",
         "channels_loaded_at", "salt_now", "salt_prev", "no_updates", "layer", "is_bot", "mfa_pending", "msg_id_values",
         "out_seq_no", "message_queue", "unencrypted_queue", "message_available", "is_internal_push",
-        "had_init_connection", "_enqueue_lock", "_rpc_completion_lock", "_rpc_completions", "_rpc_completed_ids",
-        "_rpc_completed_order", "_upd_seq", "_flush_task", "_outbound_flush_lock",
+        "had_init_connection", "pending_outbound", "resend_pending_on_connect", "_cleanup_task", "_enqueue_lock",
+        "_rpc_completion_lock", "_rpc_completions", "_rpc_completed_ids", "_rpc_completed_order", "_upd_seq",
+        "_flush_task", "_outbound_flush_lock",
     )
 
     def __init__(self, session_id: int, client: Client | None = None, auth_data: AuthData | None = None) -> None:
@@ -99,7 +99,10 @@ class Session:
         self._flush_task: asyncio.Task | None = None
         self._outbound_flush_lock = asyncio.Lock()
 
-        # TODO: store request states (i.e. received, processing, acked, etc.)
+        self.pending_outbound: OrderedDict[int, tuple[int, bytes]] = OrderedDict()
+        self.resend_pending_on_connect = False
+        self._cleanup_task: asyncio.Task | None = None
+
         # TODO: store whole session in redis or something
 
     def uniq_id(self) -> tuple[int, int]:
@@ -109,20 +112,44 @@ class Session:
     def __hash__(self) -> int:
         return hash(self.uniq_id)
 
-    # TODO: rewrite
+    def cancel_cleanup(self) -> None:
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+        self._cleanup_task = None
+
     def connect(self, client: Client) -> None:
-        # TODO: raise AuthKeyDuplicated if self.client is not None
+        self.cancel_cleanup()
         self.client = client
         self.message_available = client.message_available
-        if not self.message_queue.empty():
+        if self.pending_outbound:
+            self.resend_pending_on_connect = True
+        if not self.message_queue.empty() or self.resend_pending_on_connect:
             self.message_available.set()
         piltover.session.SessionManager.broker.subscribe(self)
+        self._schedule_outbound_flush()
 
-    # TODO: rewrite
     def disconnect(self) -> None:
+        was_connected = self.client is not None
         self.client = None
         self.message_available = None
         self.had_init_connection = False
+        if self._flush_task is not None and not self._flush_task.done():
+            self._flush_task.cancel()
+        self._flush_task = None
+        if was_connected:
+            piltover.session.SessionManager.schedule_cleanup(self)
+
+    def track_pending_outbound(self, message_id: int, seq_no: int, data: bytes) -> None:
+        self.pending_outbound[message_id] = (seq_no, data)
+
+    def ack_outbound(self, msg_ids: list[int]) -> None:
+        for msg_id in msg_ids:
+            self.pending_outbound.pop(msg_id, None)
+
+    def finalize(self) -> None:
+        self.cancel_cleanup()
+        self.client = None
+        self.message_available = None
         self._rpc_completions.clear()
         self._rpc_completed_ids.clear()
         self._rpc_completed_order.clear()
@@ -130,9 +157,12 @@ class Session:
         if self._flush_task is not None and not self._flush_task.done():
             self._flush_task.cancel()
         self._flush_task = None
-        # TODO: clear message_queue
-        piltover.session.SessionManager.broker.unsubscribe(self)
-        piltover.session.SessionManager.cleanup(self)
+        self.pending_outbound.clear()
+        self.resend_pending_on_connect = False
+        while not self.message_queue.empty():
+            self.message_queue.get_nowait()
+        while not self.unencrypted_queue.empty():
+            self.unencrypted_queue.get_nowait()
 
     def _prune_rpc_completions(self) -> None:
         while len(self._rpc_completed_ids) > _RPC_COMPLETION_TRACK_LIMIT:
@@ -189,9 +219,6 @@ class Session:
         return seq
 
     async def enqueue_unencrypted(self, obj: TLObject, in_reply: bool = True) -> None:
-        if self.client is None:
-            return
-
         async with self._enqueue_lock:
             message_id = self.msg_id(in_reply=in_reply)
             logger.debug(
@@ -200,8 +227,9 @@ class Session:
             )
             self.unencrypted_queue.put_nowait((message_id, obj.write()))
 
-            if self.message_available is not None:
-                self.message_available.set()
+        if self.message_available is not None:
+            self.message_available.set()
+        self._schedule_outbound_flush()
 
     def _prepare_outbound_obj(self, obj: TLObject) -> TLObject:
         obj = deepcopy(obj)
@@ -245,9 +273,6 @@ class Session:
         self._flush_task = asyncio.create_task(self._flush_outbound_once())
 
     async def enqueue(self, obj: TLObject, in_reply: bool) -> None:
-        if self.client is None:
-            return
-
         async with self._enqueue_lock:
             obj = self._prepare_outbound_obj(obj)
             context_values = None
@@ -285,10 +310,7 @@ class Session:
 
         if self.message_available is not None:
             self.message_available.set()
-        if in_reply:
-            await self.flush_outbound()
-        else:
-            self._schedule_outbound_flush()
+        self._schedule_outbound_flush()
 
     @staticmethod
     def make_salt(salt_key: bytes, auth_key_id: int, timestamp: int) -> bytes:

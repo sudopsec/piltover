@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import TYPE_CHECKING, cast
 
 from piltover.auth_data import AuthData
@@ -15,6 +17,8 @@ if TYPE_CHECKING:
 
 
 class SessionManager:
+    DISCONNECTED_SESSION_TTL = 600
+
     sessions: dict[tuple[int, int], Session] = {}
     broker: BaseMessageBroker = None  # type: ignore[assignment]
 
@@ -33,11 +37,34 @@ class SessionManager:
         return session, True
 
     @classmethod
-    def cleanup(cls, session: Session) -> None:
+    def schedule_cleanup(cls, session: Session) -> None:
+        if session._cleanup_task is not None and not session._cleanup_task.done():
+            return
+        session._cleanup_task = asyncio.create_task(cls._delayed_cleanup(session))
+
+    @classmethod
+    async def _delayed_cleanup(cls, session: Session) -> None:
+        try:
+            await asyncio.sleep(cls.DISCONNECTED_SESSION_TTL)
+        except asyncio.CancelledError:
+            return
+        if session.client is not None:
+            return
+        cls.finalize(session)
+
+    @classmethod
+    def finalize(cls, session: Session) -> None:
         if session.auth_data is None or session.auth_data.auth_key_id is None:
+            session.finalize()
             return
         uniq_id = session.auth_data.auth_key_id, session.session_id
         cls.sessions.pop(uniq_id, None)
+        cls.broker.unsubscribe(session)
+        session.finalize()
+
+    @classmethod
+    def cleanup(cls, session: Session) -> None:
+        cls.finalize(session)
 
     @classmethod
     async def send(

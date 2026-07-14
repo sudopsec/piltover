@@ -459,12 +459,18 @@ class Client:
                 break
             await self._write_unencrypted(message_id, data)
 
+        if session.resend_pending_on_connect and session.pending_outbound:
+            session.resend_pending_on_connect = False
+            for message_id, (seq_no, data) in session.pending_outbound.items():
+                await self._write_message(message_id, seq_no, data, session)
+
         while True:
             try:
                 message_id, seq_no, data = session.message_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             await self._write_message(message_id, seq_no, data, session)
+            session.track_pending_outbound(message_id, seq_no, data)
 
     async def _worker_loop_send(self) -> None:
         while True:
