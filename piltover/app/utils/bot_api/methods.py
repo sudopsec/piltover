@@ -196,10 +196,13 @@ async def _edit_message_text(bot_user: User, params: dict[str, Any]) -> dict[str
 
     import piltover.app.utils.updates_manager as upd
 
+    from piltover.app.utils.utils import process_message_entities
+
     message.content.message = str(text)
+    message.content.entities = await process_message_entities(str(text), None, bot_user.id)
     message.content.edit_date = datetime.now(UTC)
     message.content.version += 1
-    await message.content.save(update_fields=["message", "edit_date", "version"])
+    await message.content.save(update_fields=["message", "entities", "edit_date", "version"])
 
     opposite_peer = await Peer.get_or_create_for_user(peer.user_id, bot_user.id)
     refs = await MessageRef.filter(

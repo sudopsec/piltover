@@ -53,7 +53,17 @@ class SessionManager:
         cls.finalize(session)
 
     @classmethod
+    def has_connected_session_for_user(cls, user_id: int, *, exclude: Session | None = None) -> bool:
+        for stored in cls.sessions.values():
+            if stored is exclude:
+                continue
+            if stored.user_id == user_id and stored.client is not None:
+                return True
+        return False
+
+    @classmethod
     def finalize(cls, session: Session) -> None:
+        user_id = session.user_id
         if session.auth_data is None or session.auth_data.auth_key_id is None:
             session.finalize()
             return
@@ -61,6 +71,9 @@ class SessionManager:
         cls.sessions.pop(uniq_id, None)
         cls.broker.unsubscribe(session)
         session.finalize()
+        if user_id is not None and not cls.has_connected_session_for_user(user_id):
+            from piltover.app.utils.group_calls import schedule_leave_group_calls_for_user
+            schedule_leave_group_calls_for_user(user_id)
 
     @classmethod
     def cleanup(cls, session: Session) -> None:

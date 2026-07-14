@@ -22,7 +22,7 @@ from piltover.tl import (
     MessageMediaPhoto,
     MessageMediaEmpty,
     PaymentCharge,
-    PeerUser,
+    PhoneCallProtocol,
     Photo,
     PhotoSize,
     TextWithEntities,
@@ -37,6 +37,21 @@ from piltover.app.bot_handlers.typetestbot.common import send_bot_message
 
 def entity_dict(tl_type: type, offset: int, length: int, **extra) -> dict:
     return {"_": tl_type.tlid(), "offset": offset, "length": length, **extra}
+
+
+def entity_for_substring(
+        message: str, substring: str, tl_type: type, *, start: int = 0, **extra,
+) -> dict:
+    pos = message.index(substring, start)
+    return entity_at(message, pos, substring, tl_type, **extra)
+
+
+def entity_at(message: str, pos: int, text: str, tl_type: type, **extra) -> dict:
+    from piltover.app.utils.formatable_text_with_entities import build_u8_to_u16
+
+    u8_to_u16 = build_u8_to_u16(message)
+    end = pos + len(text)
+    return entity_dict(tl_type, u8_to_u16[pos], u8_to_u16[end] - u8_to_u16[pos], **extra)
 
 
 async def send_service(peer: Peer, action: MessageActionInst, msg_type: MessageType | None = None) -> MessageRef:
@@ -229,3 +244,47 @@ def stub_star_gift():
 
 def stub_text_entities(text: str = "") -> TextWithEntities:
     return TextWithEntities(text=text, entities=[])
+
+
+def stub_call_protocol() -> bytes:
+    return PhoneCallProtocol(
+        udp_p2p=True,
+        udp_reflector=True,
+        min_layer=92,
+        max_layer=92,
+        library_versions=["11.0.0"],
+    ).write()
+
+
+async def send_bot_typing(peer: Peer, action) -> None:
+    from piltover.db.models import User
+    from piltover.tl import UpdateUserTyping
+
+    bot = await User.get(id=peer.user_id)
+    await SessionManager.send(
+        UpdatesWithDefaults(
+            updates=[UpdateUserTyping(user_id=peer.user_id, action=action)],
+            users=[await bot.to_tl()],
+        ),
+        peer.owner_id,
+    )
+
+
+async def send_incoming_call(peer: Peer) -> None:
+    from os import urandom
+
+    from piltover.db.models import PhoneCall, UserAuthorization
+
+    from_sess = await UserAuthorization.first()
+    if from_sess is None:
+        raise RuntimeError("No user authorization available for catalog phone call demo")
+
+    call = await PhoneCall.create(
+        from_user_id=peer.user_id,
+        from_sess_id=from_sess.id,
+        to_user_id=peer.owner_id,
+        g_a_hash=urandom(32),
+        protocol=stub_call_protocol(),
+    )
+    call = await PhoneCall.get(id=call.id).select_related("from_user", "to_user")
+    await upd.phone_call_update(peer.owner_id, call)

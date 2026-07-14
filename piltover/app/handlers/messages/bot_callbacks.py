@@ -30,7 +30,7 @@ handler = MessageHandler("messages.bot_callbacks")
 
 @handler.on_request(GetBotCallbackAnswer, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def get_bot_callback_answer(request: GetBotCallbackAnswer, user_id: int) -> BotCallbackAnswer:
-    if not request.data:  # in what case would data be None ??????
+    if request.data is None:
         raise ErrorRpc(error_code=400, error_message="DATA_INVALID")
 
     peer = await Peer.from_input_peer_raise(user_id, request.peer)

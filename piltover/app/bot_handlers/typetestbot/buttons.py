@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from piltover.app.bot_handlers.typetestbot.common import _menu_rows, send_bot_message
+from piltover.app.bot_handlers.typetestbot.common import append_footer_rows, edit_bot_message, paired_menu, send_bot_message
 from piltover.app.utils.stars_manager import STARS_CURRENCY, _pack_invoice_static, make_invoice_buy_markup
 from piltover.db.enums import MediaType
 from piltover.db.models import MessageMedia, MessageRef, Peer
@@ -27,7 +27,7 @@ from piltover.tl import (
 
 
 def buttons_menu_keyboard() -> ReplyInlineMarkup:
-    return _menu_rows([
+    markup = paired_menu([
         ("Inline mix", b"demo:inline"),
         ("Buy on plain text", b"demo:buy_plain"),
         ("Buy on invoice", b"demo:buy_invoice"),
@@ -41,13 +41,16 @@ def buttons_menu_keyboard() -> ReplyInlineMarkup:
         ("Game", b"demo:game"),
         ("Switch inline", b"demo:switch"),
         ("Weird combo", b"demo:weird"),
-        ("← Hub", b"page:home"),
     ])
+    return append_footer_rows(markup, ("← Hub", b"page:home"))
 
 
-async def page_buttons(peer: Peer) -> MessageRef:
+async def page_buttons(peer: Peer, menu_message: MessageRef | None = None) -> MessageRef:
     from piltover.app.bot_handlers.typetestbot.common import BUTTONS_PAGE_TEXT
-    return await send_bot_message(peer, BUTTONS_PAGE_TEXT, buttons_menu_keyboard())
+    keyboard = buttons_menu_keyboard()
+    if menu_message is None:
+        return await send_bot_message(peer, BUTTONS_PAGE_TEXT, keyboard)
+    return await edit_bot_message(menu_message, peer, BUTTONS_PAGE_TEXT, keyboard)
 
 
 async def demo_inline(peer: Peer) -> MessageRef:
@@ -93,7 +96,7 @@ async def demo_buy_invoice(peer: Peer) -> MessageRef:
         static_data=_pack_invoice_static(invoice_tl, b"typetest/invoice"),
     )
     messages = await MessageRef.create_for_peer(
-        peer, peer.user, opposite=False,
+        peer, peer.user_id, opposite=False,
         message="Legit Stars invoice — Buy should work here.",
         media=media,
         reply_markup=make_invoice_buy_markup(STARS_CURRENCY, amount).write(),
@@ -118,7 +121,7 @@ async def demo_buy_mismatch(peer: Peer) -> MessageRef:
         KeyboardButtonRow(buttons=[KeyboardButtonBuy(text="Pay ⭐ 100")]),
     ])
     messages = await MessageRef.create_for_peer(
-        peer, peer.user, opposite=False,
+        peer, peer.user_id, opposite=False,
         message="Invoice/media mismatch — button amount ≠ invoice total.",
         media=media,
         reply_markup=wrong_buy.write(),

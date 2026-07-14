@@ -87,10 +87,17 @@ from piltover.tl import (
     RequestedPeerUser,
     ReplyInlineMarkup,
     ReplyKeyboardMarkup,
+    SendMessageCancelAction,
+    SendMessageRecordAudioAction,
+    SendMessageRecordVideoAction,
+    SendMessageTypingAction,
+    SendMessageUploadDocumentAction,
+    SendMessageUploadPhotoAction,
 )
 from piltover.app.utils.stars_manager import STARS_CURRENCY, make_invoice_buy_markup
 
 Handler = Callable[[Peer], Awaitable[MessageRef]]
+ActionHandler = Callable[[Peer, MessageRef], Awaitable[MessageRef]]
 
 
 @dataclass(frozen=True)
@@ -176,44 +183,105 @@ def datetime_in_future():
 
 # --- entities ---
 
-def _ent_handler(name: str, text: str, tl_type: type, offset: int, length: int, **extra) -> Handler:
+def _ent_handler(name: str, text: str, tl_type: type, **extra) -> Handler:
     async def handler(peer: Peer) -> MessageRef:
+        prefix = f"[entity/{name}] "
+        message = prefix + text
+        entity_extra = dict(extra)
+        if tl_type is MessageEntityMentionName:
+            entity_extra["user_id"] = peer.owner_id
         return await b.send_bot_message(
             peer,
-            f"[entity/{name}] {text}",
-            entities=[b.entity_dict(tl_type, offset, length, **extra)],
+            message,
+            entities=[b.entity_at(message, len(prefix), text, tl_type, **entity_extra)],
         )
     return handler
 
 
 def _init_entity_handlers() -> dict[bytes, Handler]:
     handlers: dict[bytes, Handler] = {}
-    specimens: list[tuple[str, str, type, int, int, dict]] = [
-        ("unknown", "word", MessageEntityUnknown, 0, 4, {}),
-        ("mention", "@user", MessageEntityMention, 0, 5, {}),
-        ("hashtag", "#tag", MessageEntityHashtag, 0, 4, {}),
-        ("bot_command", "/cmd", MessageEntityBotCommand, 0, 4, {}),
-        ("url", "https://t.me", MessageEntityUrl, 0, 12, {}),
-        ("email", "a@b.co", MessageEntityEmail, 0, 6, {}),
-        ("bold", "bold", MessageEntityBold, 0, 4, {}),
-        ("italic", "italic", MessageEntityItalic, 0, 6, {}),
-        ("code", "code", MessageEntityCode, 0, 4, {}),
-        ("pre", "block", MessageEntityPre, 0, 5, {"language": "py"}),
-        ("text_url", "link", MessageEntityTextUrl, 0, 4, {"url": "https://t.me"}),
-        ("mention_name", "@you", MessageEntityMentionName, 0, 4, {"user_id": 1}),
-        ("phone", "+12345", MessageEntityPhone, 0, 6, {}),
-        ("cashtag", "$USD", MessageEntityCashtag, 0, 4, {}),
-        ("underline", "line", MessageEntityUnderline, 0, 4, {}),
-        ("strike", "strike", MessageEntityStrike, 0, 6, {}),
-        ("bank_card", "4111111111111111", MessageEntityBankCard, 0, 16, {}),
-        ("spoiler", "secret", MessageEntitySpoiler, 0, 6, {}),
-        ("custom_emoji", "😀", MessageEntityCustomEmoji, 0, 2, {"document_id": 1}),
-        ("blockquote", "quoted text", MessageEntityBlockquote, 0, 11, {}),
+    specimens: list[tuple[str, str, type, dict]] = [
+        ("unknown", "word", MessageEntityUnknown, {}),
+        ("mention", "@user", MessageEntityMention, {}),
+        ("hashtag", "#tag", MessageEntityHashtag, {}),
+        ("bot_command", "/cmd", MessageEntityBotCommand, {}),
+        ("url", "https://t.me", MessageEntityUrl, {}),
+        ("email", "a@b.co", MessageEntityEmail, {}),
+        ("bold", "bold", MessageEntityBold, {}),
+        ("italic", "italic", MessageEntityItalic, {}),
+        ("code", "code", MessageEntityCode, {}),
+        ("pre", "block", MessageEntityPre, {"language": "py"}),
+        ("text_url", "link", MessageEntityTextUrl, {"url": "https://t.me"}),
+        ("mention_name", "@you", MessageEntityMentionName, {}),
+        ("phone", "+12345", MessageEntityPhone, {}),
+        ("cashtag", "$USD", MessageEntityCashtag, {}),
+        ("underline", "line", MessageEntityUnderline, {}),
+        ("strike", "strike", MessageEntityStrike, {}),
+        ("bank_card", "4111111111111111", MessageEntityBankCard, {}),
+        ("spoiler", "secret", MessageEntitySpoiler, {}),
+        ("custom_emoji", "😀", MessageEntityCustomEmoji, {"document_id": 1}),
+        ("blockquote", "quoted text", MessageEntityBlockquote, {}),
     ]
-    for name, text, tl_type, offset, length, extra in specimens:
+    for name, text, tl_type, extra in specimens:
         key = f"cat:ent:{name}".encode()
-        handlers[key] = _ent_handler(name, text, tl_type, offset, length, **extra)
+        handlers[key] = _ent_handler(name, text, tl_type, **extra)
     return handlers
+
+
+# --- bot actions ---
+
+def _make_action_handler(done: str, action_fn) -> ActionHandler:
+    async def handler(peer: Peer, menu_message: MessageRef) -> MessageRef:
+        await action_fn(peer)
+        from piltover.app.bot_handlers.typetestbot.catalog.pages import page_action_feedback
+        return await page_action_feedback(peer, menu_message, done)
+    return handler
+
+
+async def _act_typing(peer: Peer) -> None:
+    await b.send_bot_typing(peer, SendMessageTypingAction())
+
+
+async def _act_record_audio(peer: Peer) -> None:
+    await b.send_bot_typing(peer, SendMessageRecordAudioAction())
+
+
+async def _act_record_video(peer: Peer) -> None:
+    await b.send_bot_typing(peer, SendMessageRecordVideoAction())
+
+
+async def _act_upload_photo(peer: Peer) -> None:
+    await b.send_bot_typing(peer, SendMessageUploadPhotoAction(progress=0))
+
+
+async def _act_upload_document(peer: Peer) -> None:
+    await b.send_bot_typing(peer, SendMessageUploadDocumentAction(progress=0))
+
+
+async def _act_cancel(peer: Peer) -> None:
+    await b.send_bot_typing(peer, SendMessageCancelAction())
+
+
+async def _act_incoming_call(peer: Peer) -> None:
+    await b.send_incoming_call(peer)
+
+
+_ACTION_ITEMS: list[tuple[bytes, str, str, Callable[[Peer], Awaitable[None]]]] = [
+    (b"cat:act:typing", "act/typing", "Typing indicator sent", _act_typing),
+    (b"cat:act:record_audio", "act/record_audio", "Recording audio…", _act_record_audio),
+    (b"cat:act:record_video", "act/record_video", "Recording video…", _act_record_video),
+    (b"cat:act:upload_photo", "act/upload_photo", "Uploading photo…", _act_upload_photo),
+    (b"cat:act:upload_doc", "act/upload_document", "Uploading document…", _act_upload_document),
+    (b"cat:act:cancel", "act/cancel_typing", "Typing cancelled", _act_cancel),
+    (b"cat:act:call", "act/incoming_call", "Incoming call sent", _act_incoming_call),
+]
+
+ACTION_SPECIMENS: list[tuple[bytes, str]] = [(key, label) for key, label, _, _ in _ACTION_ITEMS]
+
+ACTION_HANDLERS: dict[bytes, ActionHandler] = {
+    key: _make_action_handler(done, fn)
+    for key, _, done, fn in _ACTION_ITEMS
+}
 
 
 # --- flags ---
@@ -263,22 +331,25 @@ async def flg_spoiler_media(peer: Peer) -> MessageRef:
 
 # --- service actions ---
 
-def _make_svc_handler(action: MessageActionInst, msg_type: MessageType) -> Handler:
+def _make_svc_handler(action, msg_type: MessageType) -> Handler:
     async def handler(peer: Peer) -> MessageRef:
-        return await b.send_service(peer, action, msg_type)
+        resolved = action(peer) if callable(action) else action
+        return await b.send_service(peer, resolved, msg_type)
     return handler
 
 
 def _build_service_handlers() -> tuple[list[Specimen], dict[bytes, Handler]]:
-    items: list[tuple[str, str, MessageActionInst, MessageType]] = [
+    items: list[tuple[str, str, object, MessageType]] = [
         ("empty", "svc/empty", MessageActionEmpty(), MessageType.SERVICE_PIN_MESSAGE),
-        ("chat_create", "svc/chat_create", MessageActionChatCreate(title="Cat", users=[1, 2]), MessageType.SERVICE_CHAT_CREATE),
+        ("chat_create", "svc/chat_create", lambda peer: MessageActionChatCreate(
+            title="Cat", users=[peer.owner_id, peer.user_id],
+        ), MessageType.SERVICE_CHAT_CREATE),
         ("chat_edit_title", "svc/chat_edit_title", MessageActionChatEditTitle(title="New"), MessageType.SERVICE_CHAT_EDIT_TITLE),
         ("chat_edit_photo", "svc/chat_edit_photo", MessageActionChatEditPhoto(photo=stub_photo()), MessageType.SERVICE_CHAT_EDIT_PHOTO),
         ("chat_del_photo", "svc/chat_del_photo", MessageActionChatDeletePhoto(), MessageType.SERVICE_CHAT_EDIT_PHOTO),
-        ("chat_add_user", "svc/chat_add_user", MessageActionChatAddUser(users=[1]), MessageType.SERVICE_CHAT_USER_ADD),
-        ("chat_del_user", "svc/chat_del_user", MessageActionChatDeleteUser(user_id=1), MessageType.SERVICE_CHAT_USER_DEL),
-        ("joined_link", "svc/joined_link", MessageActionChatJoinedByLink(inviter_id=1), MessageType.SERVICE_CHAT_USER_INVITE_JOIN),
+        ("chat_add_user", "svc/chat_add_user", lambda peer: MessageActionChatAddUser(users=[peer.owner_id]), MessageType.SERVICE_CHAT_USER_ADD),
+        ("chat_del_user", "svc/chat_del_user", lambda peer: MessageActionChatDeleteUser(user_id=peer.owner_id), MessageType.SERVICE_CHAT_USER_DEL),
+        ("joined_link", "svc/joined_link", lambda peer: MessageActionChatJoinedByLink(inviter_id=peer.owner_id), MessageType.SERVICE_CHAT_USER_INVITE_JOIN),
         ("joined_req", "svc/joined_req", MessageActionChatJoinedByRequest(), MessageType.SERVICE_CHAT_USER_REQUEST_JOIN),
         ("chan_create", "svc/chan_create", MessageActionChannelCreate(title="Ch"), MessageType.SERVICE_CHANNEL_CREATE),
         ("migrate_to", "svc/migrate_to", MessageActionChatMigrateTo(channel_id=1), MessageType.SERVICE_CHAT_MIGRATE_TO),
@@ -298,11 +369,13 @@ def _build_service_handlers() -> tuple[list[Specimen], dict[bytes, Handler]]:
         ("bot_allowed", "svc/bot_allowed", MessageActionBotAllowed(domain="typetestbot"), MessageType.SERVICE_PIN_MESSAGE),
         ("attach_menu", "svc/attach_menu", MessageActionAttachMenuBotAllowed_151(), MessageType.SERVICE_PIN_MESSAGE),
         ("contact_signup", "svc/contact_signup", MessageActionContactSignUp(), MessageType.SERVICE_PIN_MESSAGE),
-        ("geo_prox", "svc/geo_proximity", MessageActionGeoProximityReached(
-            from_id=PeerUser(user_id=1), to_id=PeerUser(user_id=2), distance=10,
+        ("geo_prox", "svc/geo_proximity", lambda peer: MessageActionGeoProximityReached(
+            from_id=PeerUser(user_id=peer.owner_id), to_id=PeerUser(user_id=peer.user_id), distance=10,
         ), MessageType.SERVICE_PIN_MESSAGE),
         ("group_call", "svc/group_call", MessageActionGroupCall(call=stub_group_call()), MessageType.SERVICE_GROUP_CALL),
-        ("invite_call", "svc/invite_call", MessageActionInviteToGroupCall(call=stub_group_call(), users=[1]), MessageType.SERVICE_GROUP_CALL),
+        ("invite_call", "svc/invite_call", lambda peer: MessageActionInviteToGroupCall(
+            call=stub_group_call(), users=[peer.owner_id],
+        ), MessageType.SERVICE_GROUP_CALL),
         ("set_ttl", "svc/set_ttl", MessageActionSetMessagesTTL(period=86400), MessageType.SERVICE_CHAT_UPDATE_TTL),
         ("call_sched", "svc/call_scheduled", MessageActionGroupCallScheduled(call=stub_group_call(), schedule_date=0), MessageType.SERVICE_GROUP_CALL),
         ("set_theme", "svc/set_theme", MessageActionSetChatTheme(emoticon="🎨"), MessageType.SERVICE_PIN_MESSAGE),
@@ -318,17 +391,17 @@ def _build_service_handlers() -> tuple[list[Specimen], dict[bytes, Handler]]:
         ("giveaway_res", "svc/giveaway_res", MessageActionGiveawayResults(winners_count=1, unclaimed_count=0), MessageType.SERVICE_PIN_MESSAGE),
         ("boost", "svc/boost", MessageActionBoostApply(boosts=1), MessageType.SERVICE_PIN_MESSAGE),
         ("gift_stars", "svc/gift_stars", MessageActionGiftStars(currency=STARS_CURRENCY, amount=1, stars=1), MessageType.SERVICE_PIN_MESSAGE),
-        ("prize_stars", "svc/prize_stars", MessageActionPrizeStars(
-            stars=1, transaction_id="x", boost_peer=PeerUser(user_id=1), giveaway_msg_id=1,
+        ("prize_stars", "svc/prize_stars", lambda peer: MessageActionPrizeStars(
+            stars=1, transaction_id="x", boost_peer=PeerUser(user_id=peer.owner_id), giveaway_msg_id=1,
         ), MessageType.SERVICE_PIN_MESSAGE),
-        ("refunded", "svc/refunded", MessageActionPaymentRefunded(
-            peer=PeerUser(user_id=1), currency=STARS_CURRENCY, total_amount=1, charge=stub_payment_charge(),
+        ("refunded", "svc/refunded", lambda peer: MessageActionPaymentRefunded(
+            peer=PeerUser(user_id=peer.owner_id), currency=STARS_CURRENCY, total_amount=1, charge=stub_payment_charge(),
         ), MessageType.SERVICE_PAYMENT),
-        ("req_peer", "svc/requested_peer", MessageActionRequestedPeer(
-            button_id=1, peers=[PeerUser(user_id=1)],
+        ("req_peer", "svc/requested_peer", lambda peer: MessageActionRequestedPeer(
+            button_id=1, peers=[PeerUser(user_id=peer.owner_id)],
         ), MessageType.SERVICE_PIN_MESSAGE),
-        ("req_peer_me", "svc/req_peer_me", MessageActionRequestedPeerSentMe(
-            button_id=1, peers=[RequestedPeerUser(user_id=1)],
+        ("req_peer_me", "svc/req_peer_me", lambda peer: MessageActionRequestedPeerSentMe(
+            button_id=1, peers=[RequestedPeerUser(user_id=peer.owner_id)],
         ), MessageType.SERVICE_PIN_MESSAGE),
         ("paid_refund", "svc/paid_refund", MessageActionPaidMessagesRefunded(count=1, stars=1), MessageType.SERVICE_PIN_MESSAGE),
         ("paid_price", "svc/paid_price", MessageActionPaidMessagesPrice(stars=1), MessageType.SERVICE_PIN_MESSAGE),
@@ -650,6 +723,8 @@ def all_specimens() -> list[Specimen]:
         items.append(Specimen(key, label, "user", False))
     for key, label in ((k, l) for k, l, _ in NOTIF_SPECIMENS):
         items.append(Specimen(key, label, "notif", False))
+    for key, label in ACTION_SPECIMENS:
+        items.append(Specimen(key, label, "actions", False))
     items.extend(_SERVICE_SPECIMENS)
     for key in _ENTITY_HANDLERS:
         items.append(Specimen(key, key.decode().split(":")[-1], "entities", False))

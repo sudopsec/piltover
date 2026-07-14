@@ -1,7 +1,24 @@
 from tortoise.expressions import Subquery
 
 from piltover.db.models import Username, Bot, Peer, MessageRef
+from piltover.db.models.message_content import MessageContent
 from piltover.tl import KeyboardButtonRow, KeyboardButtonCallback, ReplyInlineMarkup, ReplyKeyboardMarkup
+from piltover.tl.base import ReplyMarkup
+
+
+def apply_message_edit(
+        content: MessageContent,
+        *,
+        message: str,
+        entities: list[dict[str, str | int]] | None,
+        reply_markup: ReplyMarkup | None = None,
+) -> None:
+    content.message = message
+    content.entities = entities
+    if reply_markup is not None:
+        content.reply_markup = reply_markup.write()
+        content.invalidate_reply_markup_cache()
+    content.version += 1
 
 
 async def get_bot_selection_inline_keyboard(user_id: int, page: int) -> list[KeyboardButtonRow] | None:

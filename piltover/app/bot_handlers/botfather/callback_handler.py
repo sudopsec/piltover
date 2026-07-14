@@ -3,7 +3,7 @@ from tortoise.transactions import in_transaction
 
 import piltover.app.utils.updates_manager as upd
 from piltover.app.bot_handlers.botfather.mybots_command import text_no_bots, text_choose_bot
-from piltover.app.bot_handlers.botfather.utils import get_bot_selection_inline_keyboard, send_bot_message
+from piltover.app.bot_handlers.botfather.utils import apply_message_edit, get_bot_selection_inline_keyboard, send_bot_message
 from piltover.app.utils.formatable_text_with_entities import FormatableTextWithEntities
 from piltover.config import APP_CONFIG
 from piltover.db.enums import BotFatherState
@@ -72,15 +72,17 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
 
         rows = await get_bot_selection_inline_keyboard(peer.owner_id, page)
         if rows is None:
-            message.content.message = text_no_bots
+            apply_message_edit(message.content, message=text_no_bots, entities=None)
         else:
-            message.content.message = text_choose_bot
-            message.content.reply_markup = ReplyInlineMarkup(rows=rows).write()
-        message.content.invalidate_reply_markup_cache()
-        message.content.version += 1
+            apply_message_edit(
+                message.content,
+                message=text_choose_bot,
+                entities=None,
+                reply_markup=ReplyInlineMarkup(rows=rows),
+            )
 
         async with in_transaction():
-            await message.content.save(update_fields=["message", "reply_markup", "version"])
+            await message.content.save(update_fields=["message", "entities", "reply_markup", "version"])
         await upd.edit_message(peer.owner_id, {peer: message})
 
         return BotCallbackAnswer(cache_time=0)
@@ -99,28 +101,29 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
 
         bot_first_name, bot_username = bot_info
 
-        message.content.message, message.content.entities = __text_bot_selected.format(
-            name=bot_first_name, username=bot_username,
+        text, entities = __text_bot_selected.format(name=bot_first_name, username=bot_username)
+        apply_message_edit(
+            message.content,
+            message=text,
+            entities=entities,
+            reply_markup=ReplyInlineMarkup(rows=[
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"API Token", data=f"bots-token/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"Edit Bot", data=f"bots-edit/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"TODO Bot Settings", data=f"bots-settings/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"TODO Payments", data=f"bots-payments/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"TODO Transfer Ownership", data=f"bots-transfer/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"TODO Delete Bot", data=f"bots-delete/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"<- Back to Bot List", data=f"mybots".encode("latin1")),
+                ]),
+            ]),
         )
-        message.content.reply_markup = ReplyInlineMarkup(rows=[
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"API Token", data=f"bots-token/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"Edit Bot", data=f"bots-edit/{bot_id}".encode("latin1")),
-            ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"TODO Bot Settings", data=f"bots-settings/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"TODO Payments", data=f"bots-payments/{bot_id}".encode("latin1")),
-            ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"TODO Transfer Ownership", data=f"bots-transfer/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"TODO Delete Bot", data=f"bots-delete/{bot_id}".encode("latin1")),
-            ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"<- Back to Bot List", data=f"mybots".encode("latin1")),
-            ]),
-        ]).write()
-        message.content.invalidate_reply_markup_cache()
-        message.content.version += 1
 
         async with in_transaction():
             await message.content.save(update_fields=["message", "entities", "reply_markup", "version"])
@@ -131,15 +134,17 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
     if data == b"mybots":
         rows = await get_bot_selection_inline_keyboard(peer.owner_id, 0)
         if rows is None:
-            message.content.message = text_no_bots
+            apply_message_edit(message.content, message=text_no_bots, entities=None)
         else:
-            message.content.message = text_choose_bot
-            message.content.reply_markup = ReplyInlineMarkup(rows=rows).write()
-        message.content.invalidate_reply_markup_cache()
-        message.content.version += 1
+            apply_message_edit(
+                message.content,
+                message=text_choose_bot,
+                entities=None,
+                reply_markup=ReplyInlineMarkup(rows=rows),
+            )
 
         async with in_transaction():
-            await message.content.save(update_fields=["message", "reply_markup", "version"])
+            await message.content.save(update_fields=["message", "entities", "reply_markup", "version"])
         await upd.edit_message(peer.owner_id, {peer: message})
 
         return BotCallbackAnswer(cache_time=0)
@@ -160,19 +165,22 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
 
         token_nonce, bot_first_name, bot_username = bot_info
 
-        message.content.message, message.content.entities = __text_bot_token.format(
+        text, entities = __text_bot_token.format(
             name=bot_first_name, username=bot_username, token=f"{bot_id}:{token_nonce}",
         )
-        message.content.reply_markup = ReplyInlineMarkup(rows=[
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"Revoke current token", data=f"bots-revoke/{bot_id}".encode("latin1")),
+        apply_message_edit(
+            message.content,
+            message=text,
+            entities=entities,
+            reply_markup=ReplyInlineMarkup(rows=[
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"Revoke current token", data=f"bots-revoke/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+                ]),
             ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
-            ]),
-        ]).write()
-        message.content.invalidate_reply_markup_cache()
-        message.content.version += 1
+        )
 
         async with in_transaction():
             await message.content.save(update_fields=["message", "entities", "reply_markup", "version"])
@@ -201,16 +209,19 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
 
         token_nonce, bot_first_name, bot_username = bot_info
 
-        message.content.message, message.content.entities = __text_bot_token_revoked.format(
+        text, entities = __text_bot_token_revoked.format(
             name=bot_first_name, username=bot_username, token=f"{bot_id}:{token_nonce}",
         )
-        message.content.reply_markup = ReplyInlineMarkup(rows=[
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+        apply_message_edit(
+            message.content,
+            message=text,
+            entities=entities,
+            reply_markup=ReplyInlineMarkup(rows=[
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+                ]),
             ]),
-        ]).write()
-        message.content.invalidate_reply_markup_cache()
-        message.content.version += 1
+        )
 
         async with in_transaction():
             await message.content.save(update_fields=["message", "entities", "reply_markup", "version"])
@@ -251,7 +262,7 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
             else "🚫"
         )
 
-        message.content.message, message.content.entities = __text_bot_edit_info.format(
+        text, entities = __text_bot_edit_info.format(
             username=bot_username,
             name=bot_first_name,
             about=bot_about if bot_about else "🚫",
@@ -261,29 +272,32 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
             commands=f"{commands_count} command{comm_plural_s}" if commands_count else "no commands yet",
             privacy_policy=privacy_policy_url,
         )
-        message.content.reply_markup = ReplyInlineMarkup(rows=[
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"Edit Name", data=f"bots-edit-name/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"Edit About", data=f"bots-edit-about/{bot_id}".encode("latin1")),
+        apply_message_edit(
+            message.content,
+            message=text,
+            entities=entities,
+            reply_markup=ReplyInlineMarkup(rows=[
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"Edit Name", data=f"bots-edit-name/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"Edit About", data=f"bots-edit-about/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"Edit Description", data=f"bots-edit-desc/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"🚫 Edit Description Picture", data=f"bots-edit-descpic/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"Edit Botpic", data=f"bots-edit-pic/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"Edit Commands", data=f"bots-edit-commands/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"🚫 Edit Inline Placeholder", data=f"bots-edit-inline-placeholder/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"Edit Privacy Policy", data=f"bots-edit-privacy/{bot_id}".encode("latin1")),
+                ]),
+                KeyboardButtonRow(buttons=[
+                    KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+                ]),
             ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"Edit Description", data=f"bots-edit-desc/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"🚫 Edit Description Picture", data=f"bots-edit-descpic/{bot_id}".encode("latin1")),
-            ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"Edit Botpic", data=f"bots-edit-pic/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"Edit Commands", data=f"bots-edit-commands/{bot_id}".encode("latin1")),
-            ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"🚫 Edit Inline Placeholder", data=f"bots-edit-inline-placeholder/{bot_id}".encode("latin1")),
-                KeyboardButtonCallback(text=f"Edit Privacy Policy", data=f"bots-edit-privacy/{bot_id}".encode("latin1")),
-            ]),
-            KeyboardButtonRow(buttons=[
-                KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
-            ]),
-        ]).write()
-        message.content.invalidate_reply_markup_cache()
-        message.content.version += 1
+        )
 
         async with in_transaction():
             await message.content.save(update_fields=["message", "entities", "reply_markup", "version"])

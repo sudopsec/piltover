@@ -74,7 +74,37 @@ async def test_typetestbot_catalog_index() -> None:
         parsed = await PyroMessage._parse(client, bot_message.message, {}, {})
         labels = [btn.text for row in parsed.reply_markup.inline_keyboard for btn in row]
         assert "Regular (14)" in labels
+        assert "Bot actions (7)" in labels
         assert "Impossible (14)" in labels
+
+
+@pytest.mark.asyncio
+async def test_typetestbot_svc_chat_del_user() -> None:
+    from piltover.app.bot_handlers.typetestbot.catalog import CATALOG_HANDLERS
+    from piltover.db.enums import MessageType
+    from piltover.db.models import MessageRelated, Peer, User
+    from piltover.tl import MessageActionChatDeleteUser
+
+    async with TestClient(phone_number="123456789") as client:
+        user = await User.get(phone_number=client.phone_number)
+        bot = await client.get_users("typetestbot")
+        peer = await Peer.get(owner_id=user.id, user_id=bot.id)
+
+        message = await CATALOG_HANDLERS[b"cat:svc:chat_del_user"](peer)
+
+        assert message.content.type is MessageType.SERVICE_CHAT_USER_DEL
+        from io import BytesIO
+
+        action = MessageActionChatDeleteUser.read(BytesIO(message.content.extra_info))
+        assert action.user_id == user.id
+
+        related_user_ids = {
+            rel.user_id
+            for rel in await MessageRelated.filter(message_id=message.content_id)
+            if rel.user_id is not None
+        }
+        assert user.id in related_user_ids
+        assert 1 not in related_user_ids
 
 
 @pytest.mark.asyncio

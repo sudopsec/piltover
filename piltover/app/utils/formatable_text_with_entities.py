@@ -45,6 +45,30 @@ TYPES = {
 }
 
 
+def utf16_len(text: str) -> int:
+    return len(text.encode("utf-16le")) // 2
+
+
+def build_u8_to_u16(text: str) -> dict[int, int]:
+    u8_to_u16: dict[int, int] = {}
+    last_len = 0
+    for pos, char in enumerate(text):
+        last = u8_to_u16[pos - 1] if pos else 0
+        u8_to_u16[pos] = last + last_len
+        last_len = utf16_len(char)
+    u8_to_u16[len(text)] = (u8_to_u16[len(text) - 1] if text else 0) + last_len
+    return u8_to_u16
+
+
+def utf16_slice(text: str, offset: int, length: int) -> str:
+    u16 = text.encode("utf-16le")
+    return u16[offset * 2:(offset + length) * 2].decode("utf-16le")
+
+
+def _placeholder_delta(fmt_name: str, replacement: str) -> int:
+    return utf16_len(replacement) - utf16_len(f"{{{fmt_name}}}")
+
+
 class Entity:
     def __init__(
             self, type_: int, offset: int, length: int, offset_depends: dict[str, int], length_depends: dict[str, int],
@@ -55,27 +79,21 @@ class Entity:
         self.offset_depends = offset_depends
         self.length_depends = length_depends
 
-    def format(self, fmt_options: dict[str, Any]) -> dict[str, str | int]:
-        if not self.offset_depends and not self.length_depends:
-            return {
-                "_": self.type,
-                "offset": self.offset,
-                "length": self.length,
-            }
+    def format(self, template_text: str, fmt_options: dict[str, Any]) -> dict[str, str | int]:
+        u8_to_u16 = build_u8_to_u16(template_text)
+        u16_offset = u8_to_u16[self.offset]
+        u16_length = u8_to_u16[self.offset + self.length] - u16_offset
 
-        add_offset = sum(
-            len(fmt_options[fmt_name].encode("utf-16le")) // 2 * count - (len(fmt_name) + 2) * count
-            for fmt_name, count in self.offset_depends.items()
-        )
-        add_length = sum(
-            len(fmt_options[fmt_name].encode("utf-16le")) // 2 * count - (len(fmt_name) + 2) * count
-            for fmt_name, count in self.length_depends.items()
-        )
+        for fmt_name, count in self.offset_depends.items():
+            u16_offset += _placeholder_delta(fmt_name, fmt_options[fmt_name]) * count
+
+        for fmt_name, count in self.length_depends.items():
+            u16_length += _placeholder_delta(fmt_name, fmt_options[fmt_name]) * count
 
         return {
             "_": self.type,
-            "offset": self.offset + add_offset,
-            "length": self.length + add_length,
+            "offset": u16_offset,
+            "length": u16_length,
         }
 
 
@@ -157,7 +175,9 @@ class FormatableTextWithEntities:
 
     def format(self, **kwargs) -> tuple[str, list[dict[str, str | int]]]:
         kwargs = {name: str(val) for name, val in kwargs.items()}
-        return self._text.format(**kwargs), [entity.format(kwargs) for entity in self._entities]
+        return self._text.format(**kwargs), [
+            entity.format(self._text, kwargs) for entity in self._entities
+        ]
 
 
 def _test() -> None:
@@ -173,7 +193,10 @@ def _test() -> None:
     print(entities)
 
     for entity in entities:
-        print(f"entity \"{entity['_']}\": {formatted[entity['offset']:entity['offset']+entity['length']]}")
+        print(
+            f"entity \"{entity['_']}\": "
+            f"{utf16_slice(formatted, entity['offset'], entity['length'])}"
+        )
 
 
 if __name__ == "__main__":

@@ -395,6 +395,10 @@ class MessageContent(Model):
             related_channel_ids = set()
             content._fill_related(related_user_ids, related_chat_ids, related_channel_ids, related_peer)
 
+            related_user_ids, related_chat_ids, related_channel_ids = await cls._filter_existing_related(
+                related_user_ids, related_chat_ids, related_channel_ids,
+            )
+
             for related_user_id in related_user_ids:
                 related_to_create.append(models.MessageRelated(message_id=content.id, user_id=related_user_id))
             for related_chat_id in related_chat_ids:
@@ -658,16 +662,36 @@ class MessageContent(Model):
             user_ids.add(self.via_bot_id)
 
     @staticmethod
+    async def _filter_existing_related(
+            users: Iterable[int],
+            chats: Iterable[int],
+            channels: Iterable[int],
+    ) -> tuple[set[int], set[int], set[int]]:
+        user_ids = set(users)
+        chat_ids = set(chats)
+        channel_ids = set(channels)
+
+        if user_ids:
+            user_ids &= set(await models.User.filter(id__in=user_ids).values_list("id", flat=True))
+        if chat_ids:
+            chat_ids &= set(await models.Chat.filter(id__in=chat_ids).values_list("id", flat=True))
+        if channel_ids:
+            channel_ids &= set(await models.Channel.filter(id__in=channel_ids).values_list("id", flat=True))
+
+        return user_ids, chat_ids, channel_ids
+
+    @staticmethod
     async def _create_related(
             message: MessageContent,
             users: Iterable[int],
             chats: Iterable[int],
             channels: Iterable[int],
     ) -> None:
+        user_ids, chat_ids, channel_ids = await MessageContent._filter_existing_related(users, chats, channels)
         related_to_create = [
-            *(models.MessageRelated(message_id=message.id, user_id=rel_id) for rel_id in users),
-            *(models.MessageRelated(message_id=message.id, chat_id=rel_id) for rel_id in chats),
-            *(models.MessageRelated(message_id=message.id, channel_id=rel_id) for rel_id in channels),
+            *(models.MessageRelated(message_id=message.id, user_id=rel_id) for rel_id in user_ids),
+            *(models.MessageRelated(message_id=message.id, chat_id=rel_id) for rel_id in chat_ids),
+            *(models.MessageRelated(message_id=message.id, channel_id=rel_id) for rel_id in channel_ids),
         ]
 
         if related_to_create:

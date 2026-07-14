@@ -7,6 +7,8 @@ import piltover.app.utils.updates_manager as upd
 from piltover.app.utils.formatable_text_with_entities import FormatableTextWithEntities
 from piltover.db.enums import MessageType
 from piltover.db.models import MessageMention, MessageRef, Peer
+from piltover.db.models.message_content import MessageContent
+from tortoise.transactions import in_transaction
 from piltover.session import SessionManager
 from piltover.tl import (
     KeyboardButtonCallback,
@@ -20,11 +22,46 @@ from piltover.tl.base import MessageActionInst, ReplyMarkup
 from piltover.app.utils.updates_manager import UpdatesWithDefaults
 
 
+def apply_message_edit(
+        content: MessageContent,
+        *,
+        message: str,
+        entities: list[dict[str, str | int]] | None,
+        reply_markup: ReplyMarkup | None = None,
+) -> None:
+    content.message = message
+    content.entities = entities
+    if reply_markup is not None:
+        content.reply_markup = reply_markup.write()
+        content.invalidate_reply_markup_cache()
+    content.version += 1
+
+
+async def edit_bot_message(
+        menu_message: MessageRef,
+        peer: Peer,
+        text: str,
+        keyboard: ReplyMarkup | None = None,
+        *,
+        entities: list[dict[str, str | int]] | None = None,
+) -> MessageRef:
+    apply_message_edit(
+        menu_message.content,
+        message=text,
+        entities=entities,
+        reply_markup=keyboard,
+    )
+    async with in_transaction():
+        await menu_message.content.save(update_fields=["message", "entities", "reply_markup", "version"])
+    await upd.edit_message(peer.owner_id, {peer: menu_message})
+    return menu_message
+
+
 async def send_bot_message(
         peer: Peer, text: str, keyboard: ReplyMarkup | None = None, **content_kwargs,
 ) -> MessageRef:
     messages = await MessageRef.create_for_peer(
-        peer, peer.user, opposite=False,
+        peer, peer.user_id, opposite=False,
         message=text,
         reply_markup=keyboard.write() if keyboard else None,
         **content_kwargs,
@@ -117,6 +154,15 @@ async def mark_from_scheduled(message: MessageRef) -> None:
     await message.content.save(update_fields=["scheduled_date", "version"])
 
 
+NAV_NOOP_CALLBACK = b""
+
+
+def _pad_paired_items(items: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    if len(items) % 2 == 1:
+        return [*items, ("", NAV_NOOP_CALLBACK)]
+    return items
+
+
 def _menu_rows(items: list[tuple[str, bytes]]) -> ReplyInlineMarkup:
     rows: list[KeyboardButtonRow] = []
     for idx, (label, data) in enumerate(items):
@@ -126,12 +172,24 @@ def _menu_rows(items: list[tuple[str, bytes]]) -> ReplyInlineMarkup:
     return ReplyInlineMarkup(rows=rows)
 
 
+def _single_button_row(text: str, data: bytes) -> KeyboardButtonRow:
+    return KeyboardButtonRow(buttons=[KeyboardButtonCallback(text=text, data=data)])
+
+
+def paired_menu(items: list[tuple[str, bytes]]) -> ReplyInlineMarkup:
+    return _menu_rows(_pad_paired_items(items))
+
+
+def append_footer_rows(markup: ReplyInlineMarkup, *footers: tuple[str, bytes]) -> ReplyInlineMarkup:
+    for text, data in footers:
+        markup.rows.append(_single_button_row(text, data))
+    return markup
+
+
 def hub_keyboard() -> ReplyInlineMarkup:
     return ReplyInlineMarkup(rows=[
-        KeyboardButtonRow(buttons=[
-            KeyboardButtonCallback(text="🔘 Buttons", data=b"page:buttons"),
-            KeyboardButtonCallback(text="📋 Catalog", data=b"page:catalog"),
-        ]),
+        _single_button_row("🔘 Buttons", b"page:buttons"),
+        _single_button_row("📋 Catalog", b"page:catalog"),
     ])
 
 

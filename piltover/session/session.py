@@ -127,9 +127,13 @@ class Session:
             self.message_available.set()
         piltover.session.SessionManager.broker.subscribe(self)
         self._schedule_outbound_flush()
+        if self.user_id is not None:
+            from piltover.app.utils.group_calls import cancel_scheduled_leave_group_calls
+            cancel_scheduled_leave_group_calls(self.user_id)
 
     def disconnect(self) -> None:
         was_connected = self.client is not None
+        user_id = self.user_id
         self.client = None
         self.message_available = None
         self.had_init_connection = False
@@ -138,6 +142,12 @@ class Session:
         self._flush_task = None
         if was_connected:
             piltover.session.SessionManager.schedule_cleanup(self)
+            if (
+                    user_id is not None
+                    and not piltover.session.SessionManager.has_connected_session_for_user(user_id, exclude=self)
+            ):
+                from piltover.app.utils.group_calls import schedule_leave_group_calls_for_user
+                schedule_leave_group_calls_for_user(user_id)
 
     def track_pending_outbound(self, message_id: int, seq_no: int, data: bytes) -> None:
         self.pending_outbound[message_id] = (seq_no, data)

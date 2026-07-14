@@ -722,8 +722,7 @@ async def edit_message(request: EditMessage | EditMessage_133, user: User):
 
     if message_text is not None:
         content.message = message_text
-        if entities is not None:
-            content.entities = entities
+        content.entities = entities
     if media is not None:
         content.media = media
     content.edit_date = datetime.now(UTC) if content.scheduled_date is None else None

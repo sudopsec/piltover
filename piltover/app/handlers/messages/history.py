@@ -648,7 +648,7 @@ async def get_all_drafts(user_id: int) -> Updates:
 
 @handler.on_request(SearchGlobal, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def search_global(request: SearchGlobal, user_id: int):
-    limit = max(min(request.limit, 1), 10)
+    limit = min(max(request.limit, 1), 100)
 
     user = await User.get(id=user_id).only("id")
 

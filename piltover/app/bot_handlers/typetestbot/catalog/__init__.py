@@ -5,9 +5,10 @@ from piltover.app.bot_handlers.typetestbot.catalog.pages import (
     page_category,
     parse_category_page,
 )
-from piltover.app.bot_handlers.typetestbot.catalog.registry import CATALOG_HANDLERS
+from piltover.app.bot_handlers.typetestbot.catalog.registry import ACTION_HANDLERS, CATALOG_HANDLERS
 
 __all__ = [
+    "ACTION_HANDLERS",
     "CATALOG_HANDLERS",
     "CATALOG_INDEX_TEXT",
     "catalog_index_keyboard",

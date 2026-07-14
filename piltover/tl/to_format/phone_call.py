@@ -8,6 +8,9 @@ from piltover.tl.serialization_context import EMPTY_SERIALIZATION_CONTEXT, Seria
 _STUN_SERVERS = (
     ("stun.l.google.com", 19302),
     ("stun1.l.google.com", 19302),
+    ("stun2.l.google.com", 19302),
+    ("stun3.l.google.com", 19302),
+    ("stun4.l.google.com", 19302),
 )
 
 

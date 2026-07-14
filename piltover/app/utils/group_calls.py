@@ -60,8 +60,10 @@ def resolve_join_muted(request_muted: bool, group_call: GroupCall) -> bool:
 
 
 _SPEAKING_BROADCAST_INTERVAL = 0.25
+_GROUP_CALL_DISCONNECT_GRACE = 5.0
 _last_speaking_broadcast: dict[tuple[int, int], float] = {}
 _last_sfu_pause_state: dict[tuple[int, int], bool] = {}
+_pending_group_call_leave_tasks: dict[int, asyncio.Task] = {}
 
 
 def clear_speaking_state(group_call_id: int, user_id: int) -> None:
@@ -259,7 +261,7 @@ async def ensure_unique_ssrc(
         *,
         user_id: int,
 ) -> int:
-    taken = GroupCallParticipant.filter(group_call=group_call, left=False).exclude(user_id=user_id)
+    taken = GroupCallParticipant.filter(group_call=group_call).exclude(user_id=user_id)
 
     if ssrc is not None:
         if await taken.filter(source=ssrc).exists():
@@ -889,6 +891,70 @@ async def edit_group_call_participant(
         participant.format_mute_debug(),
     )
     return participant, True
+
+
+async def resolve_group_call_chat_or_channel(group_call: GroupCall) -> Chat | Channel:
+    if group_call.chat_id is not None:
+        return group_call.chat or await Chat.get(id=group_call.chat_id)
+    return group_call.channel or await Channel.get(id=group_call.channel_id)
+
+
+def cancel_scheduled_leave_group_calls(user_id: int) -> None:
+    task = _pending_group_call_leave_tasks.pop(user_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def schedule_leave_group_calls_for_user(user_id: int) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    cancel_scheduled_leave_group_calls(user_id)
+
+    async def _delayed_leave() -> None:
+        try:
+            await asyncio.sleep(_GROUP_CALL_DISCONNECT_GRACE)
+            await leave_all_group_calls_for_user(user_id)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Failed to leave group calls for disconnected user {}", user_id)
+        finally:
+            _pending_group_call_leave_tasks.pop(user_id, None)
+
+    _pending_group_call_leave_tasks[user_id] = asyncio.create_task(_delayed_leave())
+
+
+async def leave_all_group_calls_for_user(user_id: int) -> None:
+    participants = list(await GroupCallParticipant.filter(
+        user_id=user_id,
+        left=False,
+        group_call__discarded_at__isnull=True,
+        group_call__started_at__not_isnull=True,
+    ).select_related("user", "group_call__chat", "group_call__channel"))
+    if not participants:
+        return
+
+    import piltover.app.utils.updates_manager as upd
+
+    for participant in participants:
+        group_call = participant.group_call
+        left_participant = await leave_group_call(group_call, user_id, participant.source)
+        if left_participant is None:
+            continue
+        await left_participant.fetch_related("user")
+        chat_or_channel = await resolve_group_call_chat_or_channel(group_call)
+
+        if await discard_group_call_if_empty(group_call):
+            await upd.group_call_update(chat_or_channel, group_call)
+            continue
+
+        await upd.group_call_participants_update_with_call_rpc(
+            chat_or_channel, group_call, [left_participant],
+            exclude_user_ids=[user_id], just_joined=False, participant_versioned=False,
+        )
 
 
 async def leave_group_call(group_call: GroupCall, user_id: int, source: int) -> GroupCallParticipant | None:
