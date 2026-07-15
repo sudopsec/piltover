@@ -62,7 +62,7 @@ async def set_bot_username(bot_user: User, username: str | None) -> None:
     if not username:
         raise ValueError("Bot username cannot be removed.")
     if not is_username_valid(username):
-        raise ValueError("Invalid username (5–32 chars: a-z, 0-9, _).")
+        raise ValueError("Invalid username (1–32 chars: a-z, 0-9, _).")
 
     async with in_transaction():
         existing = await Username.get_or_none(user_id=bot_user.id)

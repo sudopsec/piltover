@@ -10,3 +10,5 @@ class ServerSettings(Model):
     group_creation_enabled: bool = fields.BooleanField(default=True)
     channel_creation_enabled: bool = fields.BooleanField(default=True)
     phone_calls_enabled: bool = fields.BooleanField(default=True)
+    verifybot_enabled: bool = fields.BooleanField(default=True)
+    stars_bot_enabled: bool = fields.BooleanField(default=True)

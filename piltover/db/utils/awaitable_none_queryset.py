@@ -16,10 +16,14 @@ class EmptyQuerySet(QuerySet[MODEL]):
 
     def __init__(self, model: type[MODEL]) -> None:
         super().__init__(model)
+        self._single = False
+        self._raise_does_not_exist = False
 
     def _clone(self) -> QuerySet[MODEL]:
         queryset = self.__class__.__new__(self.__class__)
         queryset.model = self.model
+        queryset._single = self._single
+        queryset._raise_does_not_exist = self._raise_does_not_exist
         return queryset
 
     def filter(self, *args: Q, **kwargs: Any) -> QuerySet[MODEL]:
@@ -34,6 +38,7 @@ class EmptyQuerySet(QuerySet[MODEL]):
     def _as_single(self) -> QuerySetSingle[None]:
         queryset = self._clone()
         queryset._single = True
+        queryset._raise_does_not_exist = False
         return queryset
 
     def latest(self, *orderings: str) -> QuerySetSingle[None]:

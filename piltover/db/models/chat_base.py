@@ -236,7 +236,7 @@ class ChatBase(Model):
         if isinstance(self, models.Chat) and participant is None:
             return False
         if isinstance(self, models.Channel) and participant is None and self.is_discussion and self.join_to_send:
-            return False
+            return self.nojoin_allow_view
         return True
 
     def can_send_messages(self, participant: models.ChatParticipant | None) -> bool:

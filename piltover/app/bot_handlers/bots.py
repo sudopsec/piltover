@@ -15,6 +15,7 @@ from piltover.app.bot_handlers.adminbot import AdminBotInteractionHandler
 from piltover.app.bot_handlers.adminbot.callback_handler import adminbot_callback_query_handler
 from piltover.app.bot_handlers.spambot import SpamBotInteractionHandler
 from piltover.app.utils.admin_access import ADMIN_ONLY_BOT_USERNAMES, is_admin
+from piltover.app.utils.server_settings import is_bot_enabled
 from piltover.app.bot_handlers.stars_pay import StarsPayBotInteractionHandler
 from piltover.app.bot_handlers.stars_pay.callback_handler import stars_pay_callback_query_handler
 from piltover.app.bot_handlers.stickers import StickersBotInteractionHandler
@@ -74,6 +75,8 @@ async def try_notify_payment_success(
     bot_username = await _get_bot_username(bot_user_id)
     if bot_username is None or bot_username not in PAYMENT_SUCCESS_HANDLERS:
         return None
+    if not await is_bot_enabled(bot_username):
+        return None
     return await PAYMENT_SUCCESS_HANDLERS[bot_username](payer, payer_peer, stars, title)
 
 
@@ -100,6 +103,8 @@ async def process_message_to_bot(peer: Peer, message: MessageRef) -> MessageRef 
 
     bot_username = await peer.user.get_raw_username()
     if bot_username in ADMIN_ONLY_BOT_USERNAMES and not await is_admin(peer.owner_id):
+        return None
+    if not await is_bot_enabled(bot_username):
         return None
 
     handler = HANDLERS[bot_username]
@@ -129,6 +134,8 @@ async def process_callback_query(peer: Peer, message: MessageRef, data: bytes) -
 
     bot_username = await peer.user.get_raw_username()
     if bot_username in ADMIN_ONLY_BOT_USERNAMES and not await is_admin(peer.owner_id):
+        return None
+    if not await is_bot_enabled(bot_username):
         return None
 
     return await CALLBACK_QUERY_HANDLERS[bot_username](peer, message, data)

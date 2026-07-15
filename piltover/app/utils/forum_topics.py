@@ -51,7 +51,7 @@ async def get_forum_channel(user_id: int, input_channel) -> tuple[Channel, Peer]
     if channel is None:
         raise ErrorRpc(error_code=406, error_message="CHANNEL_PRIVATE")
 
-    peer = await Peer.get(channel=channel)
+    peer = await Peer.get(channel_id=channel.id)
     return channel, peer
 
 

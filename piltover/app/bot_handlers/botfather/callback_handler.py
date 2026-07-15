@@ -144,7 +144,7 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
                     KeyboardButtonCallback(text=f"Revoke current token", data=f"bots-revoke/{bot_id}".encode("latin1")),
                 ]),
                 KeyboardButtonRow(buttons=[
-                    KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"« Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
                 ]),
             ]),
         )
@@ -185,7 +185,7 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
             entities=entities,
             reply_markup=ReplyInlineMarkup(rows=[
                 KeyboardButtonRow(buttons=[
-                    KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"« Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
                 ]),
             ]),
         )
@@ -261,7 +261,7 @@ async def botfather_callback_query_handler(peer: Peer, message: MessageRef, data
                     KeyboardButtonCallback(text=f"Edit Privacy Policy", data=f"bots-edit-privacy/{bot_id}".encode("latin1")),
                 ]),
                 KeyboardButtonRow(buttons=[
-                    KeyboardButtonCallback(text=f"<- Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
+                    KeyboardButtonCallback(text=f"« Back to Bot", data=f"bots/{bot_id}".encode("latin1")),
                 ]),
             ]),
         )

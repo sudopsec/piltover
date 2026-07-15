@@ -8,6 +8,8 @@ import pytest
 import pytest_asyncio
 
 from piltover.auth_data import AuthData
+from piltover.exceptions import Disconnection
+from piltover.db.models import AuthKey, User, UserAuthorization
 from piltover.message_brokers.in_memory_broker import InMemoryMessageBroker
 from piltover.session import Session, SessionManager
 from piltover.tl import Pong
@@ -118,6 +120,20 @@ async def test_enqueue_does_not_flush_immediately(broker: InMemoryMessageBroker)
 
 
 @pytest.mark.asyncio
+async def test_flush_outbound_disconnects_on_write_failure(broker: InMemoryMessageBroker) -> None:
+    client = _make_client_mock()
+    client._write_session_queues = AsyncMock(side_effect=Disconnection())
+    session = _make_session(client=client)
+    session.connect(client)
+
+    await session.enqueue(Pong(msg_id=1, ping_id=1), in_reply=False)
+    await session.flush_outbound()
+
+    assert session.client is None
+    client._write_session_queues.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_finalize_after_disconnect_ttl(broker: InMemoryMessageBroker, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SessionManager, "DISCONNECTED_SESSION_TTL", 0.05)
     client = _make_client_mock()
@@ -130,3 +146,20 @@ async def test_finalize_after_disconnect_ttl(broker: InMemoryMessageBroker, monk
 
     assert (123, 42) not in SessionManager.sessions
     assert session.pending_outbound == {}
+
+
+@pytest.mark.asyncio
+async def test_next_upd_seq_loads_from_db(app_server, broker: InMemoryMessageBroker) -> None:
+    user = await User.create(phone_number="900000099", first_name="Seq", bot=False)
+    auth_key = await AuthKey.create(id=999001, auth_key=b"y" * 256)
+    auth = await UserAuthorization.create(user=user, key=auth_key, ip="127.0.0.1", upd_seq=10)
+
+    session = _make_session()
+    session.auth_id = auth.id
+    session.user_id = user.id
+    session._upd_seq = None
+
+    assert await session._next_upd_seq() == 11
+    assert session._upd_seq == 11
+    assert isinstance(session._upd_seq, int)
+    assert await session._next_upd_seq() == 12

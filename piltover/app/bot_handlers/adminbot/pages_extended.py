@@ -76,7 +76,7 @@ async def page_bot_edit_prompt(
     prompts = {
         "name": "Отправьте новое имя бота (макс. 64 символа).",
         "lastname": "Отправьте фамилию (макс. 64) или нажмите «Пусто», чтобы очистить.",
-        "username": "Отправьте @username (5–32 символа: a-z, 0-9, _).",
+        "username": "Отправьте @username (1–32 символа: a-z, 0-9, _).",
         "about": "Отправьте текст «О боте» (макс. 120) или нажмите «Пусто», чтобы очистить.",
         "desc": "Отправьте описание бота (макс. 120) или нажмите «Пусто», чтобы очистить.",
         "privacy": "Отправьте URL политики конфиденциальности (https, макс. 240) или нажмите «Пусто», чтобы очистить.",
@@ -89,6 +89,43 @@ async def page_bot_edit_prompt(
         ]))
     rows.append(KeyboardButtonRow(buttons=[
         KeyboardButtonCallback(text="« Отмена", data=f"adm:bot:set:{bot_id}:{list_key}".encode()),
+    ]))
+    return await edit_bot_message(menu, peer, f"✏️ {title}", ReplyInlineMarkup(rows=rows))
+
+
+_ENTITY_EDIT_PROMPTS: dict[tuple[str, str], str] = {
+    ("user", "name"): "Отправьте новое имя (макс. 128 символов).",
+    ("user", "lastname"): "Отправьте фамилию (макс. 128) или нажмите «Пусто», чтобы очистить.",
+    ("user", "username"): "Отправьте @username (1–32 символа: a-z, 0-9, _) или нажмите «Пусто».",
+    ("user", "about"): "Отправьте «О себе» или нажмите «Пусто», чтобы очистить.",
+    ("user", "phone"): "Отправьте номер телефона (только цифры) или нажмите «Пусто».",
+    ("ch", "name"): "Отправьте новое название канала.",
+    ("ch", "about"): "Отправьте описание (макс. 255) или нажмите «Пусто», чтобы очистить.",
+    ("ch", "username"): "Отправьте @username (1–32 символа) или нажмите «Пусто».",
+    ("gr", "name"): "Отправьте новое название группы.",
+    ("gr", "about"): "Отправьте описание (макс. 255) или нажмите «Пусто», чтобы очистить.",
+}
+
+_ENTITY_CLEARABLE: dict[str, frozenset[str]] = {
+    "user": frozenset({"lastname", "username", "about", "phone"}),
+    "ch": frozenset({"about", "username"}),
+    "gr": frozenset({"about"}),
+}
+
+
+async def page_entity_edit_prompt(
+        peer: Peer, menu: MessageRef, kind: str, entity_id: int, field: str, *, list_key: str,
+) -> MessageRef:
+    title = _ENTITY_EDIT_PROMPTS.get((kind, field), "Отправьте новое значение.")
+    rows: list[KeyboardButtonRow] = []
+    if field in _ENTITY_CLEARABLE.get(kind, frozenset()):
+        rows.append(KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(
+                text="Пусто", data=f"adm:{kind}:empty:{field}:{entity_id}:{list_key}".encode(),
+            ),
+        ]))
+    rows.append(KeyboardButtonRow(buttons=[
+        KeyboardButtonCallback(text="« Отмена", data=f"adm:{kind}:set:{entity_id}:{list_key}".encode()),
     ]))
     return await edit_bot_message(menu, peer, f"✏️ {title}", ReplyInlineMarkup(rows=rows))
 
@@ -430,6 +467,118 @@ async def page_bot_settings(
     return await edit_bot_message(menu, peer, "\n".join(lines), markup)
 
 
+async def page_user_settings(
+        peer: Peer, user_id: int, menu: MessageRef, *, list_key: str = "u0", new_message: bool = False,
+) -> MessageRef:
+    user = await User.get_or_none(id=user_id, bot=False, deleted=False)
+    if user is None:
+        markup = ReplyInlineMarkup(rows=[back_home_row()])
+        if new_message:
+            return await push_bot_message(peer, "Пользователь не найден.", markup)
+        return await edit_bot_message(menu, peer, "Пользователь не найден.", markup)
+
+    username = await user.get_raw_username()
+    display_name = user.first_name
+    if user.last_name:
+        display_name = f"{display_name} {user.last_name}"
+
+    lines = [f"⚙️ Профиль — {display_name}", ""]
+    lines.append(f"Имя: {user.first_name}")
+    lines.append(f"Фамилия: {user.last_name or '—'}")
+    lines.append(f"Юзернейм: @{username}" if username else "Юзернейм: —")
+    lines.append(f"О себе: {user.about or '—'}")
+    lines.append(f"Телефон: {user.phone_number or '—'}")
+
+    rows = [
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="✏️ Имя", data=f"adm:user:edit:name:{user_id}:{list_key}".encode()),
+            KeyboardButtonCallback(text="✏️ Фамилия", data=f"adm:user:edit:lastname:{user_id}:{list_key}".encode()),
+        ]),
+    ]
+    if not user.system:
+        rows.append(KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="✏️ Username", data=f"adm:user:edit:username:{user_id}:{list_key}".encode()),
+        ]))
+    rows.extend([
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="✏️ О себе", data=f"adm:user:edit:about:{user_id}:{list_key}".encode()),
+            KeyboardButtonCallback(text="✏️ Телефон", data=f"adm:user:edit:phone:{user_id}:{list_key}".encode()),
+        ]),
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="« К пользователю", data=f"adm:user:{user_id}:{list_key}".encode()),
+        ]),
+    ])
+    markup = ReplyInlineMarkup(rows=rows)
+    if new_message:
+        return await push_bot_message(peer, "\n".join(lines), markup)
+    return await edit_bot_message(menu, peer, "\n".join(lines), markup)
+
+
+async def page_channel_settings(
+        peer: Peer, channel_id: int, menu: MessageRef, *, list_key: str = "c0", new_message: bool = False,
+) -> MessageRef:
+    channel = await Channel.get_or_none(id=channel_id, deleted=False)
+    if channel is None:
+        markup = ReplyInlineMarkup(rows=[back_home_row()])
+        if new_message:
+            return await push_bot_message(peer, "Канал не найден.", markup)
+        return await edit_bot_message(menu, peer, "Канал не найден.", markup)
+
+    username_row = await Username.get_or_none(channel_id=channel.id)
+    kind = "канал" if channel.channel else "супергруппа"
+
+    lines = [f"⚙️ Профиль — [{kind}] {channel.name}", ""]
+    lines.append(f"Название: {channel.name}")
+    lines.append(f"Описание: {channel.description or '—'}")
+    lines.append(f"Юзернейм: @{username_row.username}" if username_row else "Юзернейм: —")
+
+    rows = [
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="✏️ Название", data=f"adm:ch:edit:name:{channel_id}:{list_key}".encode()),
+            KeyboardButtonCallback(text="✏️ Описание", data=f"adm:ch:edit:about:{channel_id}:{list_key}".encode()),
+        ]),
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="✏️ Username", data=f"adm:ch:edit:username:{channel_id}:{list_key}".encode()),
+        ]),
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="« К каналу", data=f"adm:ch:{channel_id}:{list_key}".encode()),
+        ]),
+    ]
+    markup = ReplyInlineMarkup(rows=rows)
+    if new_message:
+        return await push_bot_message(peer, "\n".join(lines), markup)
+    return await edit_bot_message(menu, peer, "\n".join(lines), markup)
+
+
+async def page_group_settings(
+        peer: Peer, chat_id: int, menu: MessageRef, *, list_key: str = "g0", new_message: bool = False,
+) -> MessageRef:
+    chat = await Chat.get_or_none(id=chat_id, deleted=False, migrated=False)
+    if chat is None:
+        markup = ReplyInlineMarkup(rows=[back_home_row()])
+        if new_message:
+            return await push_bot_message(peer, "Группа не найдена.", markup)
+        return await edit_bot_message(menu, peer, "Группа не найден.", markup)
+
+    lines = [f"⚙️ Профиль — {chat.name}", ""]
+    lines.append(f"Название: {chat.name}")
+    lines.append(f"Описание: {chat.description or '—'}")
+
+    rows = [
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="✏️ Название", data=f"adm:gr:edit:name:{chat_id}:{list_key}".encode()),
+            KeyboardButtonCallback(text="✏️ Описание", data=f"adm:gr:edit:about:{chat_id}:{list_key}".encode()),
+        ]),
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="« К группе", data=f"adm:gr:{chat_id}:{list_key}".encode()),
+        ]),
+    ]
+    markup = ReplyInlineMarkup(rows=rows)
+    if new_message:
+        return await push_bot_message(peer, "\n".join(lines), markup)
+    return await edit_bot_message(menu, peer, "\n".join(lines), markup)
+
+
 async def page_channel(
         peer: Peer, channel_id: int, menu: MessageRef, *, list_key: str = "c0", new_message: bool = False,
 ) -> MessageRef:
@@ -458,6 +607,9 @@ async def page_channel(
         lines.append(f"Описание: {channel.description[:120]}")
 
     rows = [
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="⚙️ Профиль", data=f"adm:ch:set:{channel_id}:{list_key}".encode()),
+        ]),
         KeyboardButtonRow(buttons=[
             KeyboardButtonCallback(text="👥 Участники", data=f"adm:ch:mem:{channel_id}:0:{list_key}".encode()),
             KeyboardButtonCallback(text="🛡 Админы", data=f"adm:ch:adm:{channel_id}:0:{list_key}".encode()),
@@ -511,6 +663,9 @@ async def page_group(
         lines.append(f"Описание: {chat.description[:120]}")
 
     rows = [
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="⚙️ Профиль", data=f"adm:gr:set:{chat_id}:{list_key}".encode()),
+        ]),
         KeyboardButtonRow(buttons=[
             KeyboardButtonCallback(text="👥 Участники", data=f"adm:gr:mem:{chat_id}:0:{list_key}".encode()),
             KeyboardButtonCallback(text="🛡 Админы", data=f"adm:gr:adm:{chat_id}:0:{list_key}".encode()),

@@ -21,6 +21,8 @@ class ChannelToFormat(types.ChannelToFormatInternal):
             id=Channel.make_id_from(self.id),
             access_hash=access_hash,
             title=self.title,
+            broadcast=self.broadcast,
+            megagroup=self.megagroup,
         )
 
     def _write(self, ctx: SerializationContext) -> bytes:
@@ -33,14 +35,16 @@ class ChannelToFormat(types.ChannelToFormatInternal):
 
         participant = ctx.values.channel_participants.get(self.id) if ctx.values is not None else None
 
+        is_creator = ctx.user_id is not None and self.creator_id == ctx.user_id
+
         if participant is not None and participant.banned_rights & ChatBannedRights.VIEW_MESSAGES:
             return self._forbidden(-1).write(ctx)
 
-        if participant is None and not (self.nojoin_allow_view or self.username is not None):
+        if participant is None and not (self.nojoin_allow_view or self.username is not None or is_creator):
             return self._forbidden(-1).write(ctx)
 
         admin_rights = None
-        if self.creator_id == ctx.user_id:
+        if is_creator:
             admin_rights = CREATOR_RIGHTS
             if participant is not None and bool(participant.admin_rights & ChatAdminRights.ANONYMOUS):
                 admin_rights = types.ChatAdminRights.read(BytesIO(admin_rights.write()))
@@ -57,8 +61,8 @@ class ChannelToFormat(types.ChannelToFormatInternal):
             title=self.title,
             photo=self.photo if self.photo else types.ChatPhotoEmpty(),
             date=date,
-            creator=self.creator_id == ctx.user_id,
-            left=participant is None or participant.left,
+            creator=is_creator,
+            left=False if is_creator else (participant is None or participant.left),
             broadcast=self.broadcast,
             megagroup=self.megagroup,
             signatures=self.signatures,

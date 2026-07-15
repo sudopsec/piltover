@@ -235,6 +235,7 @@ async def page_user(
         lines.append(f"Телефон: {user.phone_number}")
     lines.append(f"Админ: {'да' if user.admin else 'нет'}")
     lines.append(f"Верифицирован: {'да ✓' if user.verified else 'нет'}")
+    lines.append(f"Поддержка: {'да' if user.support else 'нет'}")
     if not user.system:
         lines.append(f"Заблокирован за спам: {'да' if user.spam_blocked else 'нет'}")
         lines.append(f"Звёзды: ⭐ {stars}")
@@ -262,6 +263,15 @@ async def page_user(
             KeyboardButtonCallback(text="Выдать галочку", data=user_action("verify", user.id, list_key)),
         ]))
 
+    if user.support:
+        rows.append(KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="Снять поддержку", data=user_action("unsupport", user.id, list_key)),
+        ]))
+    else:
+        rows.append(KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="Выдать поддержку", data=user_action("support", user.id, list_key)),
+        ]))
+
     if not user.system:
         if user.spam_blocked:
             rows.append(KeyboardButtonRow(buttons=[
@@ -272,7 +282,10 @@ async def page_user(
                 KeyboardButtonCallback(text="Заблокировать за спам", data=user_action("spam", user.id, list_key)),
             ]))
         rows.append(KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="⚙️ Профиль", data=f"adm:user:set:{user.id}:{list_key}".encode()),
             KeyboardButtonCallback(text="⭐ Звёзды", data=f"adm:user:stars:{user.id}:{list_key}".encode()),
+        ]))
+        rows.append(KeyboardButtonRow(buttons=[
             KeyboardButtonCallback(text="📱 Сессии", data=f"adm:user:sess:{user.id}:{list_key}".encode()),
         ]))
         rows.append(KeyboardButtonRow(buttons=[

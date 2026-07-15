@@ -101,6 +101,7 @@ class MessageContent(Model):
             action=action,
             from_id=self._make_from_id(),
             ttl_period=self.ttl_period_days * self.TTL_MULT if self.ttl_period_days else None,
+            post=self.channel_post,
         )
 
     def _to_tl_content(

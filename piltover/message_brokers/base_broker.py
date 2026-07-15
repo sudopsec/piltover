@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Iterable
 from loguru import logger
 
 from piltover.cache import Cache
+from piltover.exceptions import Disconnection
 from piltover.tl import TLObject, Updates, UpdatesTooLong
 from piltover.tl.base.internal import MessageInternal
 from piltover.tl.types.internal import MessageToUsers, MessageToUsersShort, SetSessionInternalPush, ChannelSubscribe, \
@@ -254,10 +255,17 @@ class BaseMessageBroker(ABC):
         async def _deliver(session: Session) -> None:
             if session.auth_id in ignore_auths or (session.is_internal_push and not deliver_to_internal_push):
                 return
+            if session.client is None:
+                return
             try:
                 await session.enqueue(message.obj, False)
                 if _updates_need_immediate_flush(message.obj):
                     await session.flush_outbound()
+            except Disconnection:
+                logger.debug(
+                    "Session {session_id} disconnected while delivering update",
+                    session_id=session.session_id,
+                )
             except Exception as e:
                 logger.opt(exception=e).error("Error occurred while sending message")
 
@@ -326,9 +334,16 @@ class BaseMessageBroker(ABC):
         to_send = UpdatesTooLong()
 
         for session in send_to:
+            if session.client is None:
+                continue
             try:
                 await session.enqueue(to_send, False)
                 await session.flush_outbound()
+            except Disconnection:
+                logger.debug(
+                    "Session {session_id} disconnected while delivering internal push",
+                    session_id=session.session_id,
+                )
             except Exception as e:
                 logger.opt(exception=e).error("Error occurred while sending internal push")
 

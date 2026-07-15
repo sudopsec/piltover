@@ -49,6 +49,7 @@ class User(Model):
     history_ttl_days: int = fields.SmallIntField(default=0)
     read_dates_private: bool = fields.BooleanField(default=False)
     verified: bool = fields.BooleanField(default=False)
+    support: bool = fields.BooleanField(default=False)
     admin: bool = fields.BooleanField(default=False)
     spam_blocked: bool = fields.BooleanField(default=False)
     version: int = fields.IntField(default=0)
@@ -66,7 +67,7 @@ class User(Model):
 
     cached_username: models.Username | None | _Missing = _MISSING
 
-    _CACHE_VERSION = 2
+    _CACHE_VERSION = 3
 
     @property
     def background_emojis_prefetched(self) -> bool:
@@ -134,7 +135,7 @@ class User(Model):
         cache_key = self._cache_key()
 
         presence_last_seen = None
-        if not self.bot:
+        if not self.bot and not getattr(self, "support", False):
             if self.presence is None or isinstance(self.presence, models.Presence):
                 presence_last_seen = int(self.presence.last_seen.timestamp()) if self.presence else None
             else:
@@ -208,6 +209,7 @@ class User(Model):
             emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
             last_seen=presence_last_seen,
             verified=getattr(self, "verified", False),
+            support=getattr(self, "support", False),
             spam_blocked=await _user_spam_blocked(self),
         )
 
@@ -322,7 +324,11 @@ class User(Model):
                     user_id__in=[
                         user.id
                         for user in users
-                        if not user.bot and not user.presence_prefetched
+                        if (
+                                not user.bot
+                                and not getattr(user, "support", False)
+                                and not user.presence_prefetched
+                        )
                     ],
                 ).only("user_id", "last_seen")
             }
@@ -377,6 +383,7 @@ class User(Model):
                 emoji_status=emoji_status.to_tl() if emoji_status is not None else None,
                 last_seen=int(presence.last_seen.timestamp()) if presence is not None else None,
                 verified=getattr(user, "verified", False),
+                support=getattr(user, "support", False),
                 spam_blocked=await _user_spam_blocked(user),
             ))
 

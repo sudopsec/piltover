@@ -203,6 +203,8 @@ class Channel(ChatBase):
                     id=channel.make_id(),
                     access_hash=-1,
                     title=channel.name,
+                    broadcast=channel.channel,
+                    megagroup=channel.supergroup,
                 ))
                 to_cache.append((channel.cache_key(), tl[-1]))
                 continue
@@ -290,11 +292,17 @@ class Channel(ChatBase):
 
         return result
 
+    async def prehistory_applies(self) -> bool:
+        if not self.supergroup or self.channel or self.is_discussion:
+            return False
+        return not await models.Username.filter(channel_id=self.id).exists()
+
     def min_id(self, participant: models.ChatParticipant | None) -> int | None:
         min_available_id_force = self.min_available_id_force or 0
+        channel_min = (self.min_available_id or 0) if self.hidden_prehistory else 0
         if participant is not None:
-            return max(min_available_id_force, participant.min_message_id or 0) or None
-        return max(min_available_id_force, self.min_available_id or 0) or None
+            return max(min_available_id_force, channel_min, participant.min_message_id or 0) or None
+        return max(min_available_id_force, channel_min) or None
 
     @staticmethod
     def make_access_hash(user: int, auth: int, channel: int) -> int:
@@ -334,9 +342,16 @@ class Channel(ChatBase):
             return EmptyQuerySet(cls)
 
         user_id = user.id if isinstance(user, models.User) else user
-        auth_id = cast(int, request_ctx.get().auth_id)
 
         channel_id = models.Channel.norm_id(input_channel.channel_id)
+        if input_channel.access_hash == 0:
+            return cls.filter(
+                id=channel_id,
+                deleted=False,
+                chatparticipants__user_id=user_id,
+                chatparticipants__left=False,
+            )
+        auth_id = cast(int, request_ctx.get().auth_id)
         if not models.Channel.check_access_hash(user_id, auth_id, channel_id, input_channel.access_hash):
             return EmptyQuerySet(cls)
         return cls.filter(id=channel_id, deleted=False)

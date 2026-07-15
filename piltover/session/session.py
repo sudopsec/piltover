@@ -19,7 +19,7 @@ from piltover.cache import Cache
 from piltover.db.enums import PrivacyRuleKeyType
 from piltover.db.models import UserAuthorization, AuthKey, ChatParticipant, PollVote, Contact, PrivacyRule, Presence, \
     MessageRef
-from piltover.exceptions import Unreachable
+from piltover.exceptions import Disconnection, Unreachable
 from piltover.tl import Updates, Long, Int, BadServerSalt, BadMsgNotification
 from piltover.tl.core_types import TLObject, Message, MsgContainer
 from piltover.tl.types.internal import ObjectWithLayerRequirement, TaggedLongVector, NeedsContextValues
@@ -220,9 +220,9 @@ class Session:
         if self.auth_id is None:
             return 0
         if self._upd_seq is None:
-            self._upd_seq = await UserAuthorization.filter(id=self.auth_id).values_list("upd_seq", flat=True)
-            if self._upd_seq is None:
-                self._upd_seq = 0
+            self._upd_seq = await UserAuthorization.filter(id=self.auth_id).first().values_list(
+                "upd_seq", flat=True,
+            ) or 0
         self._upd_seq += 1
         seq = self._upd_seq
         asyncio.create_task(self._persist_upd_seq(self.auth_id, seq))
@@ -268,7 +268,10 @@ class Session:
             client = self.client
             if client is None:
                 return
-            await client._write_session_queues(self)
+            try:
+                await client._write_session_queues(self)
+            except Disconnection:
+                self.disconnect()
 
     async def _flush_outbound_once(self) -> None:
         await self.flush_outbound()

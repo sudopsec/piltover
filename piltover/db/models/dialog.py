@@ -51,9 +51,11 @@ class Dialog(DialogBase):
             f"Max read outbox message id is {out_read_max_id} for peer {self.peer_id} for user {self.owner_id}"
         )
 
-        top_message_id = await models.MessageRef.filter(
-            peer_id=self.peer_id
-        ).order_by("-id").first().values_list("id", flat=True)
+        top_message_id = self.peer.last_message_id
+        if top_message_id is None:
+            top_message_id = await models.MessageRef.filter(
+                peer_id=self.peer_id,
+            ).order_by("-id").first().values_list("id", flat=True)
         draft = await models.MessageDraft.get_or_none(user_id=self.owner_id, peer_id=self.peer_id)
         draft = draft.to_tl() if draft else None
 
@@ -96,7 +98,7 @@ class Dialog(DialogBase):
 
         tl = []
         for dialog, read_state in zip(dialogs, read_states):
-            top_message = 0
+            top_message = dialog.peer.last_message_id or 0
             peer_id = dialog.peer_id
             if peer_id in messages and (peer_message := messages[peer_id][1]) is not None:
                 top_message = peer_message.id

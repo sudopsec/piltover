@@ -25,6 +25,22 @@ _T = TypeVar("_T")
 BackwardO2OOrT = fields.BackwardOneToOneRelation[_T] | _T
 
 
+async def last_channel_message_id(channel: models.Channel) -> int | None:
+    return cast(
+        int | None,
+        await models.MessageRef.filter(peer__channel=channel).order_by("-id").first().values_list("id", flat=True),
+    )
+
+
+async def min_message_id_for_new_participant(channel: models.Channel) -> int | None:
+    if not await channel.prehistory_applies():
+        return None
+    if channel.hidden_prehistory:
+        last_id = await last_channel_message_id(channel)
+        return (last_id + 1) if last_id is not None else None
+    return channel.min_available_id
+
+
 def append_channel_min_message_id_to_query_maybe(
         peer: models.Peer | models.Channel, query: Q, participant: models.ChatParticipant | None = None,
         user: models.User | int | None = None,
@@ -32,28 +48,35 @@ def append_channel_min_message_id_to_query_maybe(
     user_id = user.id if isinstance(user, models.User) else user
 
     channel = None
-    participant_user_id = None
+    participant_user_id = user_id
     if isinstance(peer, models.Peer) and peer.type is PeerType.CHANNEL:
         channel = peer.channel
-        participant_user_id = peer.owner_id
+        if peer.owner_id is not None:
+            participant_user_id = peer.owner_id
     elif isinstance(peer, models.Channel):
         channel = peer
-        participant_user_id = user_id
 
     if channel is not None:
-        if channel.min_available_id or channel.min_available_id_force:
-            query &= Q(id__gte=max(channel.min_available_id or 0, channel.min_available_id_force or 0))
+        if channel.min_available_id_force:
+            query &= Q(id__gte=channel.min_available_id_force)
+        if channel.hidden_prehistory and channel.min_available_id:
+            query &= Q(id__gte=channel.min_available_id)
         if participant is not None and participant.min_message_id is not None:
             query &= Q(id__gte=participant.min_message_id)
-        else:
+        elif participant_user_id is not None:
             query &= Q(id__gte=Coalesce(
                 Subquery(
                     models.ChatParticipant.get_or_none(
-                        user_id=participant_user_id, channel=channel
+                        user_id=participant_user_id, channel=channel, left=False,
                     ).values("min_message_id")
                 ),
                 0,
             ))
+        if channel.channel and participant_user_id is not None:
+            query &= (
+                ~Q(content__type=MessageType.SERVICE_CHAT_USER_INVITE_JOIN)
+                | Q(content__author_id=participant_user_id)
+            )
 
     return query
 
@@ -142,13 +165,14 @@ class MessageRef(Model):
     async def get_(
             cls, id_: int, peer: models.Peer, types: tuple[MessageType, ...] = (MessageType.REGULAR,),
             prefetch_all: bool = False, prefetch: tuple[str, ...] = (),
+            user_id: int | None = None,
     ) -> Self | None:
         types_query = Q()
         for message_type in types:
             types_query |= Q(content__type=message_type)
 
         query = Q(id=id_, peer=peer) & types_query
-        query = append_channel_min_message_id_to_query_maybe(peer, query)
+        query = append_channel_min_message_id_to_query_maybe(peer, query, user=user_id)
 
         return await cls.get_or_none(query).select_related(
             *(cls.PREFETCH_FIELDS if prefetch_all else cls.PREFETCH_FIELDS_MIN),
@@ -157,10 +181,11 @@ class MessageRef(Model):
 
     @classmethod
     async def get_many(
-            cls, ids: list[int], peer: models.Peer, prefetch_fields: tuple[str, ...] = ()
+            cls, ids: list[int], peer: models.Peer, prefetch_fields: tuple[str, ...] = (),
+            user_id: int | None = None,
     ) -> list[Self]:
         query = Q(id__in=ids, peer=peer, content__type=MessageType.REGULAR)
-        query = append_channel_min_message_id_to_query_maybe(peer, query)
+        query = append_channel_min_message_id_to_query_maybe(peer, query, user=user_id)
 
         return await cls.filter(query).select_related(*cls.PREFETCH_FIELDS_MIN, *prefetch_fields)
 

@@ -292,6 +292,8 @@ async def get_content_settings():  # pragma: no cover
 
 @handler.on_request(UpdateStatus, ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def update_status(request: UpdateStatus, user: User) -> bool:
+    if user.support:
+        return True
     presence = await Presence.update_to_now(user, UserStatus.OFFLINE if request.offline else UserStatus.ONLINE)
     # TODO: how telegram sends status updates? surely not like this
     # await upd.update_status(user, presence, await Peer.filter(user=user).select_related("owner"))
@@ -976,12 +978,17 @@ async def update_personal_channel(request: UpdatePersonalChannel, user: User) ->
     peer_type, peer_id = Peer.type_and_id_from_input_raise(user.id, request.channel, "CHANNEL_PRIVATE")
     if peer_type is not PeerType.CHANNEL:
         raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
-    channel = await Channel.get_or_none(id=peer_id).only("id", "creator_id")
+    channel = await Channel.get_or_none(id=peer_id).only(
+        "id", "creator_id", "channel", "supergroup", "is_discussion",
+    )
     if channel is None:
         raise ErrorRpc(error_code=400, error_message="CHANNEL_PRIVATE")
 
     if channel.creator_id != user.id:
         raise ErrorRpc(error_code=400, error_message="USER_CREATOR")
+
+    if not channel.channel or channel.supergroup or channel.is_discussion:
+        raise ErrorRpc(error_code=400, error_message="CHANNEL_INVALID")
 
     if not await Username.filter(channel_id=channel.id).exists():
         raise ErrorRpc(error_code=400, error_message="CHANNEL_INVALID")

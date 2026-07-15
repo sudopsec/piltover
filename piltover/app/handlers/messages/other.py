@@ -31,7 +31,7 @@ async def set_typing(request: SetTyping, user: User):
         if resolved is not None:
             chat_or_channel, group_call = resolved
             await notify_group_call_speaking(user.id, chat_or_channel, group_call)
-            if not user.bot:
+            if not user.bot and not user.support:
                 asyncio.create_task(Presence.update_to_now(user))
             return True
 
@@ -90,7 +90,7 @@ async def set_typing(request: SetTyping, user: User):
             channel_id=peer.channel_id,
         )
 
-    if not user.bot:
+    if not user.bot and not user.support:
         await Presence.update_to_now(user)
         # TODO: send status update
         #await upd.update_status(user, presence, peers)

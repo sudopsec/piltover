@@ -96,8 +96,8 @@ class Presence(Model):
 
     @classmethod
     async def update_to_now(cls, user: models.User, status: UserStatus = UserStatus.ONLINE) -> Presence:
-        if user.bot:
-            raise RuntimeError("Can't set presence for bot")
+        if user.bot or getattr(user, "support", False):
+            raise RuntimeError("Can't set presence for bot or support user")
 
         last_seen = datetime.now(UTC)
         presence, _ = await cls.update_or_create(user=user, defaults={"status": status, "last_seen": last_seen})

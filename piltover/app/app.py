@@ -15,6 +15,7 @@ from loguru import logger
 from taskiq import TaskiqScheduler, InMemoryBroker
 from tortoise import Tortoise, connections
 
+from piltover.app import runtime
 from piltover.app.handlers import register_handlers
 from piltover.app.utils.app_create_system_data import create_system_data
 from piltover.app.utils.config_helper import make_broker_from_config, make_message_broker_from_config
@@ -115,6 +116,7 @@ class PiltoverApp:
                 message_broker=message_broker,
             )
             register_handlers(worker)
+            runtime.set_worker(worker)
             self._scheduler = TaskiqScheduler(broker, sources=[OrmDatabaseScheduleSource()])
 
     def _run_in_memory_scheduler(

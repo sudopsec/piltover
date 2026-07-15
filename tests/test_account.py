@@ -21,12 +21,13 @@ from pyrogram.raw.types import UpdateUserName, UpdateUser, AccountDaysTTL, CodeS
 from pyrogram.raw.types.auth import SentCode as TLSentCode
 from pyrogram.utils import compute_password_check, get_channel_id
 
-from piltover.db.models import User, UserPassword, SentCode, PhoneCodePurpose, TaskIqScheduledDeleteUser
+from piltover.db.models import User, UserPassword, SentCode, PhoneCodePurpose, TaskIqScheduledDeleteUser, Channel
+from piltover.tl.functions.channels import GetAdminedPublicChannels
 from piltover.tl.layer_info import layer as piltover_layer
 from piltover.tl.types import UserFull
 from tests._account_compat import UpdatePersonalChannelCompat, UsersUserFullCompat
 from tests.client import TestClient, InternalPushSession
-from tests.conftest import ClientFactory, ClientFactorySync, ChannelWithClientsFactory
+from tests.conftest import ChannelFactory, ClientFactory, ClientFactorySync, ChannelWithClientsFactory
 
 
 @contextmanager
@@ -143,8 +144,7 @@ async def test_resolve_username(client_with_auth: ClientFactory, exit_stack: Asy
 async def test_check_username_invalid(client_with_auth: ClientFactory, exit_stack: AsyncExitStack) -> None:
     client: TestClient = await exit_stack.enter_async_context(await client_with_auth())
 
-    with pytest.raises(UsernameInvalid):
-        await client.invoke(CheckUsername(username="a"))
+    assert await client.invoke(CheckUsername(username="a"))
 
     with pytest.raises(UsernameInvalid):
         await client.invoke(CheckUsername(username="a" * 100))
@@ -168,6 +168,17 @@ async def test_check_username_occupied(client_with_auth: ClientFactory, exit_sta
 async def test_check_username_success(client_with_auth: ClientFactory, exit_stack: AsyncExitStack) -> None:
     client: TestClient = await exit_stack.enter_async_context(await client_with_auth())
     assert await client.invoke(CheckUsername(username="test_username"))
+
+
+@pytest.mark.asyncio
+async def test_change_username_single_character(client_with_auth: ClientFactory, exit_stack: AsyncExitStack) -> None:
+    client: TestClient = await exit_stack.enter_async_context(await client_with_auth())
+
+    async with client.expect_updates_m(UpdateUserName):
+        assert await client.set_username("z")
+
+    me = await client.get_me()
+    assert me.username == "z"
 
 
 @pytest.mark.asyncio
@@ -577,3 +588,50 @@ async def test_update_personal_channel_not_creator(channel_with_clients: Channel
         await client2.invoke(UpdatePersonalChannelCompat(
             channel=await client2.resolve_peer(channel.id),
         ))
+
+
+@pytest.mark.asyncio
+async def test_update_personal_channel_rejects_supergroup(channel_with_clients: ChannelWithClientsFactory) -> None:
+    channel, (client,) = await channel_with_clients(
+        1, clients_run=True, resolve_channel=True, supergroup=True,
+    )
+    assert await client.set_chat_username(channel.id, "personal_sg_test")
+
+    with pytest.raises(ChannelInvalid):
+        await client.invoke(UpdatePersonalChannelCompat(
+            channel=await client.resolve_peer(channel.id),
+        ))
+
+
+@pytest.mark.asyncio
+async def test_get_admined_public_channels_for_personal_broadcast_only(
+        channel_with_clients: ChannelWithClientsFactory, test_channel: ChannelFactory,
+) -> None:
+    broadcast, (client,) = await channel_with_clients(1, clients_run=True, resolve_channel=True)
+    supergroup_id = await test_channel(client, supergroup=True, name="personal_sg_list")
+    supergroup = await client.get_chat(get_channel_id(supergroup_id))
+
+    assert await client.set_chat_username(broadcast.id, "personal_bc_test")
+    assert await client.set_chat_username(supergroup.id, "personal_sg_list")
+
+    from piltover.app.handlers.channels import get_admined_public_channels
+
+    user = await User.get(phone_number=client.phone_number)
+    broadcast_db_id = Channel.norm_id(get_channel_id(broadcast.id))
+    supergroup_db_id = Channel.norm_id(supergroup_id)
+
+    personal_channels = await Channel.filter(
+        deleted=False,
+        creator_id=user.id,
+        chatparticipants__user_id=user.id,
+        username__isnull=False,
+        channel=True,
+        supergroup=False,
+        is_discussion=False,
+    ).values_list("id", flat=True)
+
+    assert broadcast_db_id in personal_channels
+    assert supergroup_db_id not in personal_channels
+
+    result = await get_admined_public_channels(GetAdminedPublicChannels(for_personal=True), user.id)
+    assert len(result.chats) == len(personal_channels)

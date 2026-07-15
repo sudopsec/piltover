@@ -4,7 +4,7 @@ from tortoise.expressions import F, Q
 
 import piltover.app.utils.updates_manager as upd
 from piltover.db.enums import PeerType
-from piltover.db.models import User, Peer, Poll, PollAnswer, PollVote, MessageRef
+from piltover.db.models import User, Peer, Poll, PollAnswer, PollVote, MessageRef, MessageContent
 from piltover.db.models.message_ref import append_channel_min_message_id_to_query_maybe
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc
@@ -17,12 +17,19 @@ from piltover.worker import MessageHandler
 handler = MessageHandler("messages.polls")
 
 
+async def _bump_poll_message_cache(message: MessageRef) -> None:
+    await MessageContent.filter(id=message.content_id).update(version=F("version") + 1)
+    await MessageRef.filter(content_id=message.content_id).update(version=F("version") + 1)
+    message.content.version += 1
+    message.version += 1
+
+
 @handler.on_request(GetPollResults, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def get_poll_results(request: GetPollResults, user_id: int) -> Updates:
     peer = await Peer.from_input_peer_raise(user_id, request.peer, allow_migrated_chat=True)
     query = Q(peer=peer)
     if peer.type is PeerType.CHANNEL:
-        query = append_channel_min_message_id_to_query_maybe(peer, query)
+        query = append_channel_min_message_id_to_query_maybe(peer, query, user=user_id)
 
     message = await MessageRef.get_or_none(query, id=request.msg_id).select_related(
         "content__media", "content__media__poll"
@@ -99,7 +106,7 @@ async def send_vote(request: SendVote, user_id: int) -> Updates:
     peer = await Peer.from_input_peer_raise(user_id, request.peer)
     query = Q(peer=peer)
     if peer.type is PeerType.CHANNEL:
-        query = append_channel_min_message_id_to_query_maybe(peer, query)
+        query = append_channel_min_message_id_to_query_maybe(peer, query, user=user_id)
 
     message = await MessageRef.get_or_none(query, id=request.msg_id).select_related(
         "content__media", "content__media__poll",
@@ -117,6 +124,7 @@ async def send_vote(request: SendVote, user_id: int) -> Updates:
         await PollVote.filter(id__in=vote_ids).delete()
         await Poll.filter(id=message.content.media.poll.id).update(version=F("version") + 1)
         message.content.media.poll.version += 1
+        await _bump_poll_message_cache(message)
         return await upd.update_message_poll(message.content.media.poll, user_id)
     if len(request.options) > 10:
         raise ErrorRpc(error_code=400, error_message="OPTIONS_TOO_MUCH")
@@ -145,5 +153,6 @@ async def send_vote(request: SendVote, user_id: int) -> Updates:
     await PollVote.bulk_create(votes_to_create)
     await Poll.filter(id=message.content.media.poll.id).update(version=F("version") + 1)
     message.content.media.poll.version += 1
+    await _bump_poll_message_cache(message)
 
     return await upd.update_message_poll(message.content.media.poll, user_id)

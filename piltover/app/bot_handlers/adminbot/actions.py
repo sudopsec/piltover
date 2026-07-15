@@ -42,6 +42,21 @@ async def toggle_user_admin(
     return BotCallbackAnswer(message=f"Права администратора {action}.", cache_time=0)
 
 
+async def toggle_user_support(
+        peer: Peer, menu: MessageRef, user_id: int, support: bool, *, list_key: str,
+) -> BotCallbackAnswer:
+    user = await User.get_or_none(id=user_id, deleted=False)
+    if user is None or user.bot:
+        return BotCallbackAnswer(message="Пользователь не найден.", alert=True, cache_time=0)
+
+    changed = await verification.set_user_support(user, support)
+    await pages.page_user(peer, user_id, menu, list_key=list_key)
+    if not changed:
+        return BotCallbackAnswer(message="Уже актуально.", cache_time=0)
+    action = "выдан" if support else "снят"
+    return BotCallbackAnswer(message=f"Флаг поддержки {action}.", cache_time=0)
+
+
 async def toggle_user_verified(
         peer: Peer, menu: MessageRef, user_id: int, verified: bool, *, list_key: str,
 ) -> BotCallbackAnswer:
@@ -434,6 +449,93 @@ async def clear_bot_field(
     await AdminBotUserState.filter(user_id=admin_user_id, state=AdminBotState.WAIT_BOT_EDIT).delete()
     await pages_extended.page_bot_settings(peer, bot_id, menu, list_key=list_key)
     return BotCallbackAnswer(message="Очищено.", cache_time=0)
+
+
+_ENTITY_CLEARABLE = {
+    "user": frozenset({"lastname", "username", "about", "phone"}),
+    "ch": frozenset({"about", "username"}),
+    "gr": frozenset({"about"}),
+}
+
+
+async def clear_entity_field(
+        peer: Peer, menu: MessageRef, kind: str, entity_id: int, field: str,
+        *, list_key: str, admin_user_id: int,
+) -> BotCallbackAnswer:
+    from piltover.app.utils.admin_entity_edit import (
+        apply_channel_field_value, apply_group_field_value, apply_user_field_value,
+    )
+    from piltover.db.enums import AdminBotState
+    from piltover.db.models import Channel, Chat
+
+    if field not in _ENTITY_CLEARABLE.get(kind, frozenset()):
+        return BotCallbackAnswer(message="Это поле нельзя очистить.", alert=True, cache_time=0)
+
+    if kind == "user":
+        user = await User.get_or_none(id=entity_id, bot=False, deleted=False)
+        if user is None:
+            return BotCallbackAnswer(message="Пользователь не найден.", alert=True, cache_time=0)
+        error = await apply_user_field_value(user, field, "", clear=True)
+        if error is not None:
+            return BotCallbackAnswer(message=error, alert=True, cache_time=0)
+        await AdminBotUserState.filter(user_id=admin_user_id, state=AdminBotState.WAIT_ENTITY_EDIT).delete()
+        await pages_extended.page_user_settings(peer, entity_id, menu, list_key=list_key)
+        return BotCallbackAnswer(message="Очищено.", cache_time=0)
+
+    if kind == "ch":
+        channel = await Channel.get_or_none(id=entity_id, deleted=False)
+        if channel is None:
+            return BotCallbackAnswer(message="Канал не найден.", alert=True, cache_time=0)
+        error = await apply_channel_field_value(channel, field, "", clear=True)
+        if error is not None:
+            return BotCallbackAnswer(message=error, alert=True, cache_time=0)
+        await AdminBotUserState.filter(user_id=admin_user_id, state=AdminBotState.WAIT_ENTITY_EDIT).delete()
+        await pages_extended.page_channel_settings(peer, entity_id, menu, list_key=list_key)
+        return BotCallbackAnswer(message="Очищено.", cache_time=0)
+
+    if kind == "gr":
+        chat = await Chat.get_or_none(id=entity_id, deleted=False, migrated=False)
+        if chat is None:
+            return BotCallbackAnswer(message="Группа не найдена.", alert=True, cache_time=0)
+        error = await apply_group_field_value(chat, field, "", clear=True)
+        if error is not None:
+            return BotCallbackAnswer(message=error, alert=True, cache_time=0)
+        await AdminBotUserState.filter(user_id=admin_user_id, state=AdminBotState.WAIT_ENTITY_EDIT).delete()
+        await pages_extended.page_group_settings(peer, entity_id, menu, list_key=list_key)
+        return BotCallbackAnswer(message="Очищено.", cache_time=0)
+
+    return BotCallbackAnswer(message="Неизвестная сущность.", alert=True, cache_time=0)
+
+
+async def begin_entity_edit_input(
+        peer: Peer, menu: MessageRef, kind: str, entity_id: int, field: str,
+        *, list_key: str, admin_user_id: int,
+) -> BotCallbackAnswer:
+    from piltover.db.enums import AdminBotState
+    from piltover.db.models import Channel, Chat
+
+    if kind == "user":
+        user = await User.get_or_none(id=entity_id, bot=False, deleted=False)
+        if user is None:
+            return BotCallbackAnswer(message="Пользователь не найден.", alert=True, cache_time=0)
+        if field == "username" and user.system:
+            return BotCallbackAnswer(message="Юзернейм системного аккаунта нельзя менять.", alert=True, cache_time=0)
+    elif kind == "ch":
+        if await Channel.get_or_none(id=entity_id, deleted=False) is None:
+            return BotCallbackAnswer(message="Канал не найден.", alert=True, cache_time=0)
+    elif kind == "gr":
+        if await Chat.get_or_none(id=entity_id, deleted=False, migrated=False) is None:
+            return BotCallbackAnswer(message="Группа не найдена.", alert=True, cache_time=0)
+    else:
+        return BotCallbackAnswer(message="Неизвестная сущность.", alert=True, cache_time=0)
+
+    await AdminBotUserState.set_state(
+        admin_user_id,
+        AdminBotState.WAIT_ENTITY_EDIT,
+        f"{kind}:{field}:{entity_id}:{list_key}:{menu.id}".encode(),
+    )
+    await pages_extended.page_entity_edit_prompt(peer, menu, kind, entity_id, field, list_key=list_key)
+    return BotCallbackAnswer(message="Отправьте новое значение в чат.", cache_time=0)
 
 
 async def begin_bot_edit_input(

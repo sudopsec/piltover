@@ -14,7 +14,8 @@ from piltover.app.handlers.messages.history import format_messages_internal, rea
 from piltover.app.handlers.messages.invites import user_join_chat_or_channel
 from piltover.app.handlers.messages.sending import send_message_internal
 from piltover.app.utils.spam_block import check_spam_blocked_creation
-from piltover.app.utils.utils import validate_username, check_password_internal
+from piltover.app.utils.test_sponsored_messages import build_channel_sponsored_messages
+from piltover.app.utils.utils import normalize_username, validate_username, check_password_internal
 from piltover.config import APP_CONFIG
 from piltover.context import request_ctx
 from piltover.db.enums import MessageType, PeerType, ChatBannedRights, ChatAdminRights, PrivacyRuleKeyType, \
@@ -25,12 +26,14 @@ from piltover.db.models import User, Channel, Peer, Dialog, ChatParticipant, Rea
     ReadHistoryChunk, DefaultSendAs, Stickerset, StickersetThumb
 from piltover.db.models.channel import CREATOR_RIGHTS
 from piltover.db.models.message_ref import append_channel_min_message_id_to_query_maybe, \
+    min_message_id_for_new_participant, \
     unlink_channel_posts_for_deleted_discussions
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc, Unreachable
 from piltover.session import SessionManager
 from piltover.tl import MessageActionChannelCreate, UpdateChannel, Updates, MissingInvitee, \
     InputChannelFromMessage, InputChannel, ChannelFull, PhotoEmpty, PeerNotifySettings, MessageActionChatEditTitle, \
+    MessageActionChatAddUser, \
     InputMessageID, InputMessageReplyTo, ChannelParticipantsRecent, ChannelParticipantsAdmins, \
     ChannelParticipantsSearch, ChatReactionsAll, ChatReactionsNone, ChatReactionsSome, ReactionEmoji, \
     ReactionCustomEmoji, SendAsPeer, PeerUser, MessageActionChatEditPhoto, InputUserSelf, InputUser, \
@@ -44,12 +47,12 @@ from piltover.tl.functions.channels import GetAdminedPublicChannels, CheckUserna
     TogglePreHistoryHidden, ToggleJoinToSend, GetSendAs, GetSendAs_135, GetAdminLog, ToggleJoinRequest, \
     GetGroupsForDiscussion, SetDiscussionGroup, UpdateColor, ToggleSlowMode, ToggleParticipantsHidden, \
     ReadMessageContents, DeleteHistory, DeleteParticipantHistory, ReorderUsernames, DeactivateAllUsernames, SetStickers, \
-    SetEmojiStickers
+    SetEmojiStickers, GetSponsoredMessages_133
 from piltover.tl.functions.messages import SetChatAvailableReactions, SetChatAvailableReactions_136, \
     SetChatAvailableReactions_145, SetChatAvailableReactions_179
 from piltover.tl.types.channels import ChannelParticipants, ChannelParticipant, SendAsPeers, AdminLogResults
 from piltover.tl.types.messages import Chats, ChatFull as MessagesChatFull, Messages, AffectedMessages, InvitedUsers, \
-    AffectedHistory, MessagesSlice
+    AffectedHistory, MessagesSlice, SponsoredMessages, SponsoredMessagesEmpty
 from piltover.tl.base import InputStickerSet as TLInputStickerSetBase, ChatReactions as TLChatReactionsBase, \
     Reaction as TLReactionBase, ChannelParticipant as TLChannelParticipantBase, Updates as TLUpdatesBase
 from piltover.utils.users_chats_channels import UsersChatsChannels
@@ -60,7 +63,7 @@ handler = MessageHandler("channels")
 
 @handler.on_request(CheckUsername, ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def check_username(request: CheckUsername) -> bool:
-    request.username = request.username.lower()
+    request.username = normalize_username(request.username)
     validate_username(request.username)
     if await Username.filter(username=request.username).exists():
         raise ErrorRpc(error_code=400, error_message="USERNAME_OCCUPIED")
@@ -80,7 +83,7 @@ async def update_username(request: UpdateUsername, user_id: int) -> bool:
     if participant is None or not channel.admin_has_permission(participant, ChatAdminRights.CHANGE_INFO):
         raise ErrorRpc(error_code=403, error_message="CHAT_ADMIN_REQUIRED")
 
-    request.username = request.username.lower().strip()
+    request.username = normalize_username(request.username)
     current_username = cast(Username | None, channel.username)
     if (not request.username and current_username is None) \
             or (current_username is not None and current_username.username == request.username):
@@ -129,6 +132,14 @@ async def update_username(request: UpdateUsername, user_id: int) -> bool:
             channel.min_available_id += 1
         channel.hidden_prehistory = False
         await channel.save(update_fields=["min_available_id", "hidden_prehistory"])
+
+    if channel.discussion_id:
+        discussion = await Channel.get_or_none(id=channel.discussion_id, is_discussion=True)
+        if discussion is not None:
+            discussion.nojoin_allow_view = bool(request.username)
+            discussion.version += 1
+            await discussion.save(update_fields=["nojoin_allow_view", "version"])
+            await upd.update_channel(discussion)
 
     await Channel.filter(id=channel.id).update(version=F("version") + 1)
     await channel.refresh_from_db(["version"])
@@ -180,6 +191,11 @@ async def create_channel(request: CreateChannel, user_id: int) -> Updates:
 
     if not request.broadcast and not request.megagroup:
         raise ErrorRpc(error_code=400, error_message="CHANNELS_TOO_MUCH")
+    if request.broadcast and request.megagroup:
+        raise ErrorRpc(error_code=400, error_message="CHANNEL_INVALID")
+
+    is_broadcast = request.broadcast
+    is_supergroup = request.megagroup
 
     title = request.title.strip()
     description = request.about.strip()
@@ -196,7 +212,7 @@ async def create_channel(request: CreateChannel, user_id: int) -> Updates:
 
     async with in_transaction():
         channel, peer_channel = await _create_channel(
-            user_id, title, description, request.broadcast, request.megagroup, is_forum=is_forum,
+            user_id, title, description, is_broadcast, is_supergroup, is_forum=is_forum,
         )
         await _add_user_to_channel(channel, peer_channel, user_id)
 
@@ -211,6 +227,7 @@ async def create_channel(request: CreateChannel, user_id: int) -> Updates:
         user, peer_channel, None, None, False,
         author=user_id, type=MessageType.SERVICE_CHANNEL_CREATE,
         extra_info=MessageActionChannelCreate(title=request.title).write(),
+        channel_post=is_broadcast,
     )
 
     updates.updates.insert(0, UpdateChannel(channel_id=channel.make_id()))
@@ -320,8 +337,10 @@ async def get_full_channel(request: GetFullChannel, user_id: int) -> MessagesCha
 
     can_change_info = participant is not None and channel.admin_has_permission(participant, ChatAdminRights.CHANGE_INFO)
 
+    prehistory_applies = await channel.prehistory_applies()
+
     min_message_id: int | None = None
-    if channel.hidden_prehistory and participant is not None and participant.min_message_id:
+    if prehistory_applies and channel.hidden_prehistory and participant is not None and participant.min_message_id:
         min_message_id = cast(
             int | None,
             cast(
@@ -400,7 +419,7 @@ async def get_full_channel(request: GetFullChannel, user_id: int) -> MessagesCha
                     # and not participant.left
                     # and channel.admin_has_permission(participant, ChatAdminRights.INVITE_USERS)
             ),
-            hidden_prehistory=channel.hidden_prehistory,
+            hidden_prehistory=prehistory_applies and channel.hidden_prehistory,
             can_set_location=False,
             has_scheduled=has_scheduled,
             can_view_stats=False,
@@ -589,7 +608,7 @@ async def delete_messages(request: DeleteMessages, user_id: int) -> AffectedMess
     if not channel.admin_has_permission(participant, ChatAdminRights.DELETE_MESSAGES):
         raise ErrorRpc(error_code=403, error_message="MESSAGE_DELETE_FORBIDDEN")
 
-    peer = await Peer.get(channel=channel).only("id")
+    peer = await Peer.get(channel_id=channel.id).only("id")
 
     ids = request.id[:100]
     ids_query = Q(id__in=ids, peer=peer)
@@ -1005,18 +1024,7 @@ async def invite_to_channel(request: InviteToChannel, user_id: int) -> InvitedUs
         ).group_by("user_id").annotate(count=Count("id")).values_list("user_id", "count")
     }
 
-    min_message_id = channel.min_available_id
-    if channel.hidden_prehistory:
-        last_message_id = cast(
-            int | None,
-            cast(
-                object,
-                await MessageRef.filter(
-                    peer__channel=channel,
-                ).order_by("-id").first().values_list("id", flat=True)
-            )
-        )
-        min_message_id = (last_message_id + 1) if last_message_id is not None else None
+    min_message_id = await min_message_id_for_new_participant(channel)
 
     privacy_rules = await PrivacyRule.has_access_to_bulk(user_ids, user_id, [PrivacyRuleKeyType.CHAT_INVITE])
 
@@ -1068,20 +1076,31 @@ async def invite_to_channel(request: InviteToChannel, user_id: int) -> InvitedUs
             ]
             await AdminLogEntry.bulk_create(admin_log_entries)
 
+    updates = Updates(
+        updates=[UpdateChannel(channel_id=channel.make_id())],
+        chats=[await channel.to_tl()],
+        users=[],
+        date=int(time()),
+        seq=0,
+    )
+
     if added_user_ids:
         await SessionManager.subscribe_to_channel(channel.id, added_user_ids)
         for added_user_id in added_user_ids:
             await Dialog.create_or_unhide(added_user_id, peer_with_channel)
             await upd.update_channel_for_user(channel, added_user_id)
 
+        if channel.supergroup and not channel.channel:
+            user = await User.get(id=user_id).only("id", "bot")
+            updates_msg = await send_message_internal(
+                user, peer_with_channel, None, None, False,
+                author=user_id, type=MessageType.SERVICE_CHAT_USER_ADD,
+                extra_info=MessageActionChatAddUser(users=added_user_ids).write(),
+            )
+            upd.merge_updates(updates, updates_msg)
+
     return InvitedUsers(
-        updates=Updates(
-            updates=[UpdateChannel(channel_id=channel.make_id())],
-            chats=[await channel.to_tl()],
-            users=[],
-            date=int(time()),
-            seq=0,
-        ),
+        updates=updates,
         missing_invitees=missing_invitees,
     )
 
@@ -1336,9 +1355,22 @@ async def leave_channel(request: LeaveChannel, user_id: int) -> Updates:
     return await upd.update_channel_for_user(peer.channel, user_id)
 
 
+@handler.on_request(GetSponsoredMessages_133, ReqHandlerFlags.DONT_FETCH_USER)
+async def get_channel_sponsored_messages(
+        request: GetSponsoredMessages_133, user_id: int,
+) -> SponsoredMessages | SponsoredMessagesEmpty:
+    channel = await Channel.get_from_input(user_id, request.channel)
+    if channel is None or not channel.channel:
+        return SponsoredMessagesEmpty()
+    return await build_channel_sponsored_messages(channel)
+
+
 @handler.on_request(GetAdminedPublicChannels, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def get_admined_public_channels(request: GetAdminedPublicChannels, user_id: int) -> Chats:
     query = Channel.filter(deleted=False, creator_id=user_id, chatparticipants__user_id=user_id, username__isnull=False)
+
+    if request.for_personal:
+        query = query.filter(channel=True, supergroup=False, is_discussion=False)
 
     if request.check_limit and await query.count() >= APP_CONFIG.public_channels_limit:
         raise ErrorRpc(error_code=400, error_message="CHANNELS_ADMIN_PUBLIC_TOO_MUCH")
@@ -1415,29 +1447,58 @@ async def toggle_join_to_send(request: ToggleJoinToSend, user_id: int) -> Update
     return await upd.update_channel(channel)
 
 
+async def _send_as_peers_for_user(user: User, send_as_channels: list[Channel] | None = None) -> SendAsPeers:
+    if send_as_channels is None:
+        send_as_channels = []
+    peers = [SendAsPeer(peer=user.to_tl_peer())]
+    for send_as_channel in send_as_channels:
+        peers.append(SendAsPeer(peer=send_as_channel.to_tl_peer()))
+    return SendAsPeers(
+        peers=peers,
+        chats=await Channel.to_tl_bulk(send_as_channels),
+        users=[await user.to_tl()],
+    )
+
+
+async def _owned_broadcast_send_as_channels(user_id: int) -> list[Channel]:
+    return await Channel.filter(
+        channel=True,
+        supergroup=False,
+        deleted=False,
+        creator_id=user_id,
+        username__isnull=False,
+        chatparticipants__user_id=user_id,
+        chatparticipants__left=False,
+    ).distinct()
+
+
 @handler.on_request(GetSendAs_135, ReqHandlerFlags.BOT_NOT_ALLOWED)
 @handler.on_request(GetSendAs, ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def get_send_as(request: GetSendAs | GetSendAs_135, user: User) -> SendAsPeers:
+    for_paid_reactions = getattr(request, "for_paid_reactions", False)
+
     channel = await Channel.get_from_input(user, request.peer)
-    if channel is None:
-        raise ErrorRpc(error_code=406, error_message="CHANNEL_PRIVATE")
+    if channel is not None:
+        participant = await channel.get_participant(user.id)
+        if participant is None or participant.left:
+            raise ErrorRpc(error_code=406, error_message="CHANNEL_PRIVATE")
 
-    if not channel.supergroup:
-        raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
+        if channel.channel and not channel.supergroup:
+            return await _send_as_peers_for_user(user)
 
-    # TODO: figure out how telegram selects channels for SendAs
-    send_as = await Channel.filter(
-        channel=True, deleted=False, creator=user, chatparticipants__user=user, username__isnull=False,
-    )
-    send_as_peers = [SendAsPeer(peer=user.to_tl_peer())]
-    for channel in send_as:
-        send_as_peers.append(SendAsPeer(peer=channel.to_tl_peer()))
+        if not channel.supergroup:
+            raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
 
-    return SendAsPeers(
-        peers=send_as_peers,
-        chats=await Channel.to_tl_bulk(send_as),
-        users=[await user.to_tl()],
-    )
+        if for_paid_reactions:
+            return await _send_as_peers_for_user(user)
+
+        return await _send_as_peers_for_user(user, await _owned_broadcast_send_as_channels(user.id))
+
+    peer_type, _ = Peer.type_and_id_from_input_raise(user.id, request.peer, "PEER_ID_INVALID")
+    if peer_type is PeerType.USER and for_paid_reactions:
+        return await _send_as_peers_for_user(user)
+
+    raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
 
 
 @handler.on_request(GetAdminLog, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
@@ -1604,9 +1665,11 @@ async def set_discussion_group(request: SetDiscussionGroup, user_id: int) -> boo
     channel.version += 1
     if old_group is not None:
         old_group.is_discussion = False
+        old_group.nojoin_allow_view = False
         old_group.version += 1
     if group is not None:
         group.is_discussion = True
+        group.nojoin_allow_view = await Username.filter(channel=channel).exists()
         group.version += 1
 
     channels_to_update = [channel]
@@ -1645,7 +1708,9 @@ async def set_discussion_group(request: SetDiscussionGroup, user_id: int) -> boo
         ))
 
     async with in_transaction():
-        await Channel.bulk_update(channels_to_update, fields=["discussion_id", "is_discussion", "version"])
+        await Channel.bulk_update(
+            channels_to_update, fields=["discussion_id", "is_discussion", "nojoin_allow_view", "version"],
+        )
         await AdminLogEntry.bulk_create(admin_log_to_create)
 
     await upd.update_channel(channel)
@@ -1834,7 +1899,7 @@ async def delete_history(request: DeleteHistory, user_id: int) -> Updates:
     if not channel.admin_has_permission(participant, ChatAdminRights.DELETE_MESSAGES):
         raise ErrorRpc(error_code=403, error_message="CHAT_ADMIN_REQUIRED")
 
-    peer = await Peer.get(channel=channel).only("id")
+    peer = await Peer.get(channel_id=channel.id).only("id")
 
     message_ids = cast(
         list[int],
@@ -1869,7 +1934,7 @@ async def delete_participant_history(request: DeleteParticipantHistory, user_id:
     if peer_type not in (PeerType.SELF, PeerType.USER):
         raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
 
-    peer = await Peer.get(channel=channel).only("id")
+    peer = await Peer.get(channel_id=channel.id).only("id")
 
     messages_to_delete = cast(
         list[int],

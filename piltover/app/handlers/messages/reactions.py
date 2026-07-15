@@ -84,7 +84,7 @@ async def send_reaction(request: SendReaction, user_id: int) -> Updates:
                 and request.msg_id < channel_min_id:
             raise ErrorRpc(error_code=400, error_message="MESSAGE_ID_INVALID")
 
-    if (message := await MessageRef.get_(request.msg_id, peer, prefetch=("peer__channel",))) is None:
+    if (message := await MessageRef.get_(request.msg_id, peer, prefetch=("peer__channel",), user_id=user_id)) is None:
         raise ErrorRpc(error_code=400, error_message="MESSAGE_ID_INVALID")
 
     if peer.type is PeerType.CHANNEL and not peer.channel.all_reactions:
@@ -209,7 +209,7 @@ async def get_messages_reactions(request: GetMessagesReactions, user_id: int) ->
         if not chat_or_channel.can_view_messages(participant):
             raise ErrorRpc(error_code=403, error_message="CHAT_WRITE_FORBIDDEN")
 
-    if (messages := await MessageRef.get_many(request.id, peer, prefetch_fields=("peer__channel",))) is None:
+    if (messages := await MessageRef.get_many(request.id, peer, prefetch_fields=("peer__channel",), user_id=user_id)) is None:
         raise ErrorRpc(error_code=400, error_message="MESSAGE_ID_INVALID")
 
     return await upd.update_reactions(user_id, messages, peer, False)
@@ -310,7 +310,7 @@ async def get_message_reactions_list(request: GetMessageReactionsList, user_id: 
         raise ErrorRpc(error_code=400, error_message="BROADCAST_FORBIDDEN")
 
     message_query = Q(id=request.id, peer=peer, content__type=MessageType.REGULAR)
-    message_query = append_channel_min_message_id_to_query_maybe(peer, message_query)
+    message_query = append_channel_min_message_id_to_query_maybe(peer, message_query, user=user_id)
     message = await MessageRef.get_or_none(message_query).select_related("content").only(
         "content_id", "content__author_id", "content__author_reactions_unread"
     )

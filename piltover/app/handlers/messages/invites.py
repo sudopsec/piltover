@@ -8,11 +8,12 @@ from tortoise.transactions import in_transaction
 
 import piltover.app.utils.updates_manager as upd
 from piltover.app.handlers.messages.sending import send_message_internal
-from piltover.app.utils.updates_manager import UpdatesWithDefaults
+from piltover.app.utils.updates_manager import UpdatesWithDefaults, merge_updates
 from piltover.config import APP_CONFIG
 from piltover.db.enums import PeerType, MessageType, ChatBannedRights, ChatAdminRights, AdminLogEntryAction
 from piltover.db.models import User, Peer, ChatParticipant, ChatInvite, ChatInviteRequest, Chat, ChatBase, Channel, \
-    Dialog, AdminLogEntry, MessageRef
+    Dialog, AdminLogEntry
+from piltover.db.models.message_ref import min_message_id_for_new_participant
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc, Unreachable
 from piltover.session import SessionManager
@@ -263,6 +264,16 @@ def _get_invite_hash_from_link(invite_link: str) -> str | None:
     return None
 
 
+def _join_inviter_id(
+        chat_or_channel: ChatBase, user: User, from_invite: ChatInvite | None,
+) -> int:
+    if from_invite is not None:
+        return from_invite.user_id
+    if isinstance(chat_or_channel, Channel) and chat_or_channel.channel:
+        return user.id
+    return 0
+
+
 async def user_join_chat_or_channel(chat_or_channel: ChatBase, user: User, from_invite: ChatInvite | None) -> Updates:
     if isinstance(chat_or_channel, Channel):
         channels_count = await ChatParticipant.filter(user_id=user.id, channel_id__not=None, left=False).count()
@@ -277,20 +288,7 @@ async def user_join_chat_or_channel(chat_or_channel: ChatBase, user: User, from_
 
     min_message_id = None
     if isinstance(chat_or_channel, Channel):
-        if chat_or_channel.hidden_prehistory:
-            min_message_id = cast(
-                int | None,
-                cast(
-                    object,
-                    # TODO: use Max("id") instead of .order_by("-id").first() ?
-                    await MessageRef.filter(
-                        peer__channel=chat_or_channel,
-                    ).order_by("-id").first().values_list("id", flat=True)
-                )
-            )
-            min_message_id = (min_message_id + 1) if min_message_id is not None else None
-        else:
-            min_message_id = chat_or_channel.min_available_id
+        min_message_id = await min_message_id_for_new_participant(chat_or_channel)
 
     async with in_transaction():
         if isinstance(chat_or_channel, Chat):
@@ -302,13 +300,25 @@ async def user_join_chat_or_channel(chat_or_channel: ChatBase, user: User, from_
         else:
             raise Unreachable
 
-        await ChatParticipant.update_or_create(user_id=user.id, **Chat.or_channel(chat_or_channel), defaults={
-            "inviter_id": from_invite.user_id if from_invite is not None else 0,
-            "invite": from_invite,
-            "min_message_id": min_message_id,
-            "left": False,
-            "chat_channel_id": chat_or_channel.make_id(),
-        })
+        participant, created = await ChatParticipant.update_or_create(
+            user_id=user.id, **Chat.or_channel(chat_or_channel),
+            defaults={
+                "inviter_id": _join_inviter_id(chat_or_channel, user, from_invite),
+                "invite": from_invite,
+                "min_message_id": min_message_id,
+                "left": False,
+                "chat_channel_id": chat_or_channel.make_id(),
+            },
+        )
+        if not created:
+            participant.inviter_id = _join_inviter_id(chat_or_channel, user, from_invite)
+            participant.invite = from_invite
+            participant.min_message_id = min_message_id
+            participant.left = False
+            participant.chat_channel_id = chat_or_channel.make_id()
+            await participant.save(update_fields=[
+                "inviter_id", "invite_id", "min_message_id", "left", "chat_channel_id",
+            ])
         await ChatInviteRequest.delete_for_chat_or_channel(chat_or_channel, user_id=user.id)
         await Dialog.create_or_unhide(user.id, chat_peer)
         if isinstance(chat_or_channel, Channel):
@@ -322,6 +332,11 @@ async def user_join_chat_or_channel(chat_or_channel: ChatBase, user: User, from_
     if isinstance(chat_or_channel, Channel):
         await SessionManager.subscribe_to_channel(chat_or_channel.id, [user.id])
         updates = await upd.update_channel_for_user(chat_or_channel, user.id)
+
+        ucc = UsersChatsChannels()
+        ucc.add_user(user.id)
+        join_users, _, _ = await ucc.resolve()
+        updates.users = join_users
 
         if chat_or_channel.supergroup and not chat_or_channel.channel:
             channel_peer = await Peer.get(channel_id=chat_or_channel.id).select_related("channel")
@@ -337,7 +352,7 @@ async def user_join_chat_or_channel(chat_or_channel: ChatBase, user: User, from_
                     author=user.id, type=MessageType.SERVICE_CHAT_USER_ADD,
                     extra_info=MessageActionChatAddUser(users=[user.id]).write(),
                 )
-            updates.updates.extend(msg_updates.updates)
+            merge_updates(updates, msg_updates)
 
         return updates
 

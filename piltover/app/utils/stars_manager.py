@@ -503,10 +503,11 @@ async def _update_invoice_receipt(
     media.static_data = _pack_invoice_static(updated_invoice, invoice_payload)
     content = invoice_message.content
     content.edit_date = datetime.now(UTC)
+    content.edit_hide = True
     content.version += 1
     async with in_transaction():
         await media.save(update_fields=["static_data"])
-        await content.save(update_fields=["edit_date", "version"])
+        await content.save(update_fields=["edit_date", "edit_hide", "version"])
         await MessageRef.filter(content_id=content.id).update(version=F("version") + 1)
 
     return await upd.edit_message(payer.id, {invoice_message.peer: invoice_message})

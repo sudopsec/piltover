@@ -168,3 +168,31 @@ async def test_contact_token_import_deleted_user(exit_stack: AsyncExitStack) -> 
 
     with pytest.raises(BadRequest):
         await client1.invoke(ImportContactToken(token=contact_token))
+
+
+@pytest.mark.asyncio
+async def test_get_top_peers_correspondents() -> None:
+    from piltover.app.handlers.contacts import get_top_peers
+    from piltover.db.models import User
+    from piltover.tl import TopPeerCategoryCorrespondents, PeerUser as TLPeerUser
+    from piltover.tl.functions.contacts import GetTopPeers
+
+    async with TestClient(phone_number="123456789") as client1, TestClient(phone_number="1234567890") as client2:
+        user2 = await client1.resolve_user(client2)
+        await client1.send_message(user2.id, "hello")
+
+        owner = await User.get(phone_number=client1.phone_number)
+        result = await get_top_peers(
+            GetTopPeers(correspondents=True, offset=0, limit=20, hash=0),
+            owner.id,
+        )
+
+        assert len(result.categories) == 1
+        assert isinstance(result.categories[0].category, TopPeerCategoryCorrespondents)
+        assert result.categories[0].count >= 1
+        peer_user_ids = [
+            peer.peer.user_id for peer in result.categories[0].peers
+            if isinstance(peer.peer, TLPeerUser)
+        ]
+        me2 = await client2.get_me()
+        assert me2.id in peer_user_ids

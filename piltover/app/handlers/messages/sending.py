@@ -1,3 +1,4 @@
+import asyncio
 from array import array
 from collections import defaultdict
 from datetime import datetime, UTC, timedelta
@@ -50,6 +51,14 @@ from piltover.worker import MessageHandler
 
 handler = MessageHandler("messages.sending")
 
+
+async def _process_builtin_bot_safe(ctx, message_ref_id: int) -> None:
+    try:
+        await ctx.worker.call_internal(ProcessMessageToBuiltinBot(messageref_id=message_ref_id))
+    except Exception as exc:
+        logger.opt(exception=exc).warning("Builtin bot processing failed for message {}", message_ref_id)
+
+
 DocOrPhotoMedia = (
     InputMediaUploadedDocument, InputMediaUploadedDocument_133, InputMediaUploadedPhoto, InputMediaPhoto,
     InputMediaDocument, InputMediaDocument_133,
@@ -85,7 +94,7 @@ async def _extract_mentions_from_message(entities: list[dict], text: str, author
 
 async def send_created_messages_internal(
         messages: dict[Peer, MessageRef], opposite: bool, peer: Peer, user: User, clear_draft: bool,
-        mentioned_user_ids: set[int],
+        mentioned_user_ids: set[int], *, channel_notify_subscribers: bool = True,
 ) -> Updates:
     ctx = request_ctx.get(None)
 
@@ -159,21 +168,26 @@ async def send_created_messages_internal(
             logger.debug(f"Creating task create_discussion({message_ref.id})...")
             await ctx.worker.call_internal(CreateDiscussionThread(message_id=message_ref.id))
 
-        from piltover.app.utils.bot_api.groups import notify_bot_api_recipients
-        await notify_bot_api_recipients(messages, message_ref.content.author_id)
+        from piltover.app.utils.bot_api.groups import schedule_bot_api_notification
+        schedule_bot_api_notification(messages, message_ref.content.author_id)
 
-        return await upd.send_message_channel(user.id, peer.channel, message_ref)
+        if channel_notify_subscribers:
+            return await upd.send_message_channel(user.id, peer.channel, message_ref)
+        return await upd.send_message_channel_user(user.id, peer.channel, message_ref)
 
     if (update := await upd.send_message(user.id, messages)) is None:
         raise Unreachable
 
-    from piltover.app.utils.bot_api.groups import notify_bot_api_recipients
+    from piltover.app.utils.bot_api.groups import schedule_bot_api_notification
     author_id = next(iter(messages.values())).content.author_id
-    await notify_bot_api_recipients(messages, author_id)
+    schedule_bot_api_notification(messages, author_id)
 
     if peer.user and peer.user.bot and await peer.user.get_raw_username() in bots.HANDLERS and ctx is not None:
         message_ref = messages[peer]
-        await ctx.worker.call_internal(ProcessMessageToBuiltinBot(messageref_id=message_ref.id))
+        asyncio.create_task(
+            _process_builtin_bot_safe(ctx, message_ref.id),
+            name="builtin-bot-process",
+        )
 
     return update
 
@@ -182,7 +196,8 @@ async def send_message_internal(
         user: User, peer: Peer, random_id: int | None, reply_to_message_id: int | None, clear_draft: bool,
         author: User | int, opposite: bool = True, scheduled_date: int | None = None, unhide_dialog: bool = True, *,
         text: str | None = None, entities: list[dict[str, int | str]] | None = None,
-        top_msg_id: int | None = None,
+        top_msg_id: int | None = None, channel_notify_subscribers: bool = True,
+        reply_to: MessageRef | None = None,
         **message_kwargs
 ) -> Updates:
     """
@@ -220,12 +235,14 @@ async def send_message_internal(
         if reply_to_message_id is None:
             reply_to_message_id = top_msg_id
 
-    if reply_to_message_id:
+    if reply_to is None and reply_to_message_id:
         reply_to = await MessageRef.get_or_none(
             peer=peer, id=reply_to_message_id,
         ).select_related("content", "reply_to", "top_message")
-        if reply_to is None:
-            raise ErrorRpc(error_code=400, error_message="REPLY_TO_INVALID")
+    if reply_to_message_id and reply_to is None:
+        raise ErrorRpc(error_code=400, error_message="REPLY_TO_INVALID")
+    if reply_to is not None and reply_to_message_id is None:
+        reply_to_message_id = reply_to.id
         if opposite and peer.type is PeerType.CHANNEL and peer.channel.supergroup:
             if peer.channel.forum:
                 if reply_to_top is None:
@@ -317,7 +334,10 @@ async def send_message_internal(
 
         return await upd.new_scheduled_message(user.id, message)
 
-    updates = await send_created_messages_internal(messages, opposite, peer, user, clear_draft, mentioned_user_ids)
+    updates = await send_created_messages_internal(
+        messages, opposite, peer, user, clear_draft, mentioned_user_ids,
+        channel_notify_subscribers=channel_notify_subscribers,
+    )
 
     _, _, unread_count, _, _ = await ReadState.get_in_out_ids_and_unread(user.id, peer, True, True)
     if not unread_count:
@@ -582,7 +602,7 @@ async def update_pinned_message(request: UpdatePinnedMessage, user_id: int):
     await _check_bot_blocked(user, peer)
 
     message_query = Q(id=request.id, peer=peer, content__type=MessageType.REGULAR)
-    message_query = append_channel_min_message_id_to_query_maybe(peer, message_query)
+    message_query = append_channel_min_message_id_to_query_maybe(peer, message_query, user=user_id)
     message = await MessageRef.get_or_none(message_query).only("id", "content_id", "pinned")
     if message is None:
         raise ErrorRpc(error_code=400, error_message="MESSAGE_ID_INVALID")
@@ -617,7 +637,11 @@ async def update_pinned_message(request: UpdatePinnedMessage, user_id: int):
 
         _, _, result = await upd.pin_messages(user_id, messages)
 
-    if not request.unpin and not request.silent and not request.pm_oneside:
+    if (
+            not request.unpin
+            and not request.silent
+            and (peer.type in (PeerType.CHAT, PeerType.CHANNEL) or not request.pm_oneside)
+    ):
         updates = await send_message_internal(
             user, peer, None, message.id, False, author=user_id, type=MessageType.SERVICE_PIN_MESSAGE,
             extra_info=MessageActionPinMessage().write(),
@@ -686,7 +710,7 @@ async def edit_message(request: EditMessage | EditMessage_133, user: User):
             Q(content__type=MessageType.REGULAR)
             | Q(scheduled_by_user_id=user.id, content__type=MessageType.SCHEDULED)
         )
-        query = append_channel_min_message_id_to_query_maybe(peer, query)
+        query = append_channel_min_message_id_to_query_maybe(peer, query, user=user)
         message = await MessageRef.get_or_none(query).select_related(*MessageRef.PREFETCH_FIELDS)
     else:
         message = await MessageRef.get_(
@@ -744,7 +768,7 @@ async def edit_message(request: EditMessage | EditMessage_133, user: User):
     if media is not None:
         content.media = media
     content.edit_date = datetime.now(UTC) if content.scheduled_date is None else None
-    content.edit_hide = False
+    content.edit_hide = user.bot
     content.reply_markup = reply_markup
     content.version += 1
 
@@ -800,7 +824,7 @@ async def edit_message(request: EditMessage | EditMessage_133, user: User):
             )
         return await upd.edit_message_channel(peer.channel, messages[got_peer])
 
-    if not user.bot:
+    if not user.bot and not user.support:
         peers = [message_peer for message_peer in messages.keys() if message_peer != peer]
         presence = await Presence.update_to_now(user)
         await upd.update_status(user, presence, peers)
@@ -1386,7 +1410,7 @@ async def forward_messages(
             next(iter(result.values())), to_peer.channel, existing_by_random_id, user.id,
         )
 
-    if not user.bot:
+    if not user.bot and not user.support:
         presence = await Presence.update_to_now(user)
         await upd.update_status(user, presence, peers[1:])
 

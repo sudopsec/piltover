@@ -59,6 +59,7 @@ class MessageToFormat(types.MessageToFormatInternal):
                 from_id=self.content.from_id,
                 mentioned=self.ref.mentioned,
                 media_unread=self.ref.media_unread,
+                post=self.content.post,
                 ttl_period=self.content.ttl_period,
             )
         else:

@@ -199,6 +199,23 @@ async def adminbot_callback_query_handler(
             peer, message, "ch", int(parts[3]), list_key=list_key, admin_user_id=peer.owner_id,
         )
 
+    if data.startswith(b"adm:ch:empty:"):
+        parts, list_key = _parse_parts(data)
+        return await actions.clear_entity_field(
+            peer, message, "ch", int(parts[4]), parts[3], list_key=list_key, admin_user_id=peer.owner_id,
+        )
+
+    if data.startswith(b"adm:ch:edit:"):
+        parts, list_key = _parse_parts(data)
+        return await actions.begin_entity_edit_input(
+            peer, message, "ch", int(parts[4]), parts[3], list_key=list_key, admin_user_id=peer.owner_id,
+        )
+
+    if data.startswith(b"adm:ch:set:"):
+        parts, list_key = _parse_parts(data)
+        await pages_extended.page_channel_settings(peer, int(parts[3]), message, list_key=list_key)
+        return BotCallbackAnswer(cache_time=0)
+
     if data.startswith(b"adm:ch:open:"):
         parts, list_key = _parse_parts(data)
         await pages_extended.page_channel(
@@ -233,6 +250,23 @@ async def adminbot_callback_query_handler(
             peer, message, "gr", int(parts[3]), list_key=list_key, admin_user_id=peer.owner_id,
         )
 
+    if data.startswith(b"adm:gr:empty:"):
+        parts, list_key = _parse_parts(data)
+        return await actions.clear_entity_field(
+            peer, message, "gr", int(parts[4]), parts[3], list_key=list_key, admin_user_id=peer.owner_id,
+        )
+
+    if data.startswith(b"adm:gr:edit:"):
+        parts, list_key = _parse_parts(data)
+        return await actions.begin_entity_edit_input(
+            peer, message, "gr", int(parts[4]), parts[3], list_key=list_key, admin_user_id=peer.owner_id,
+        )
+
+    if data.startswith(b"adm:gr:set:"):
+        parts, list_key = _parse_parts(data)
+        await pages_extended.page_group_settings(peer, int(parts[3]), message, list_key=list_key)
+        return BotCallbackAnswer(cache_time=0)
+
     if data.startswith(b"adm:gr:open:"):
         parts, list_key = _parse_parts(data)
         await pages_extended.page_group(
@@ -254,6 +288,23 @@ async def adminbot_callback_query_handler(
         body, list_key = split_list_key(data)
         user_id = int(body.decode().split(":")[3])
         await pages.page_user(peer, user_id, message, list_key=list_key, overlay=True)
+        return BotCallbackAnswer(cache_time=0)
+
+    if data.startswith(b"adm:user:empty:"):
+        parts, list_key = _parse_parts(data)
+        return await actions.clear_entity_field(
+            peer, message, "user", int(parts[4]), parts[3], list_key=list_key, admin_user_id=peer.owner_id,
+        )
+
+    if data.startswith(b"adm:user:edit:"):
+        parts, list_key = _parse_parts(data)
+        return await actions.begin_entity_edit_input(
+            peer, message, "user", int(parts[4]), parts[3], list_key=list_key, admin_user_id=peer.owner_id,
+        )
+
+    if data.startswith(b"adm:user:set:"):
+        parts, list_key = _parse_parts(data)
+        await pages_extended.page_user_settings(peer, int(parts[3]), message, list_key=list_key)
         return BotCallbackAnswer(cache_time=0)
 
     if data.startswith(b"adm:user:stars:"):
@@ -393,6 +444,14 @@ async def adminbot_callback_query_handler(
     if data.startswith(b"adm:act:unverify:"):
         body, list_key = split_list_key(data)
         return await actions.toggle_user_verified(peer, message, int(body.decode().split(":")[3]), False, list_key=list_key)
+
+    if data.startswith(b"adm:act:unsupport:"):
+        body, list_key = split_list_key(data)
+        return await actions.toggle_user_support(peer, message, int(body.decode().split(":")[3]), False, list_key=list_key)
+
+    if data.startswith(b"adm:act:support:"):
+        body, list_key = split_list_key(data)
+        return await actions.toggle_user_support(peer, message, int(body.decode().split(":")[3]), True, list_key=list_key)
 
     if data.startswith(b"adm:act:spamrep:"):
         body, list_key = split_list_key(data)

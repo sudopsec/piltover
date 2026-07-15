@@ -72,6 +72,18 @@ async def page_server_config(peer: Peer, menu: MessageRef) -> MessageRef:
             ),
         ]),
         KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(
+                text=_toggle_label("Verify Bot", settings.verifybot_enabled),
+                data=b"adm:cfg:verifybot",
+            ),
+        ]),
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(
+                text=_toggle_label("Stars Bot", settings.stars_bot_enabled),
+                data=b"adm:cfg:stars",
+            ),
+        ]),
+        KeyboardButtonRow(buttons=[
             KeyboardButtonCallback(text="« Назад", data=b"adm:server"),
         ]),
         KeyboardButtonRow(buttons=[back_home_row().buttons[0]]),

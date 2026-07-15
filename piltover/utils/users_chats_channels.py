@@ -19,7 +19,7 @@ CHAT_SELECT_RELATED = ("photo",)
 CHANNEL_SELECT_RELATED = ("photo",)
 
 USER_SELECT_ONLY = (
-    "id", "version", "bot", "deleted", "verified", "spam_blocked", "accent_color_id", "profile_color_id",
+    "id", "version", "bot", "deleted", "verified", "support", "spam_blocked", "accent_color_id", "profile_color_id",
     "first_name", "last_name", "phone_number", "lang_code",
 
     "background_emojis__id", "background_emojis__accent_emoji_id", "background_emojis__profile_emoji_id",

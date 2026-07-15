@@ -3,13 +3,16 @@ from __future__ import annotations
 from io import BytesIO
 
 from piltover.app.utils.bot_api.entities import entities_to_bot_api
-from piltover.app.utils.bot_api.media import file_to_bot_api, serialize_media_field
+from piltover.app.utils.bot_api.reply import reply_parameters_to_bot_api
+from piltover.app.utils.bot_api.media import file_to_bot_api, serialize_message_media_to_bot_api
 from piltover.app.utils.bot_api.peers import peer_to_bot_api_chat_id
 from piltover.db.enums import PeerType
 from piltover.db.models import BotInfo, CallbackQuery, BotPrecheckoutQuery, MessageFwdHeader, MessageRef, Peer, User
 from piltover.tl import (
-    KeyboardButtonBuy, KeyboardButtonCallback, KeyboardButtonCopy, KeyboardButtonGame,
-    KeyboardButtonSwitchInline, KeyboardButtonUrl, KeyboardButtonWebView, ReplyInlineMarkup,
+    KeyboardButton, KeyboardButtonBuy, KeyboardButtonCallback, KeyboardButtonCopy,
+    KeyboardButtonGame, KeyboardButtonRequestGeoLocation, KeyboardButtonRequestPhone,
+    KeyboardButtonRequestPoll, KeyboardButtonSwitchInline, KeyboardButtonUrl,
+    KeyboardButtonWebView, ReplyInlineMarkup,
 )
 from piltover.tl import TLObject
 
@@ -117,16 +120,21 @@ def _button_to_bot_api(button) -> dict | None:
         return {"text": text, "pay": True}
     if isinstance(button, KeyboardButtonWebView):
         return {"text": text, "web_app": {"url": button.url}}
+    if isinstance(button, KeyboardButton):
+        return {"text": text}
+    if isinstance(button, KeyboardButtonRequestPhone):
+        return {"text": text, "request_contact": True}
+    if isinstance(button, KeyboardButtonRequestGeoLocation):
+        return {"text": text, "request_location": True}
+    if isinstance(button, KeyboardButtonRequestPoll):
+        item: dict = {"text": text, "request_poll": {}}
+        if button.quiz:
+            item["request_poll"] = {"type": "quiz"}
+        return item
     return None
 
 
-async def reply_markup_to_bot_api(reply_markup_bytes: bytes | None) -> dict | None:
-    if reply_markup_bytes is None:
-        return None
-    markup = TLObject.read(BytesIO(reply_markup_bytes))
-    if not isinstance(markup, ReplyInlineMarkup):
-        return None
-
+def _rows_to_bot_api(markup) -> list[list[dict]]:
     rows = []
     for row in markup.rows:
         buttons = []
@@ -135,6 +143,22 @@ async def reply_markup_to_bot_api(reply_markup_bytes: bytes | None) -> dict | No
                 buttons.append(converted)
         if buttons:
             rows.append(buttons)
+    return rows
+
+
+async def reply_markup_to_bot_api(reply_markup_bytes: bytes | None) -> dict | None:
+    """Serialize stored markup for Bot API Message.reply_markup (inline only)."""
+    if reply_markup_bytes is None:
+        return None
+    try:
+        markup = TLObject.read(BytesIO(reply_markup_bytes))
+    except Exception:
+        return None
+
+    if not isinstance(markup, ReplyInlineMarkup):
+        return None
+
+    rows = _rows_to_bot_api(markup)
     if not rows:
         return None
     return {"inline_keyboard": rows}
@@ -177,6 +201,8 @@ async def message_to_bot_api(
         result["reply_markup"] = markup
 
     if depth < 1 and message.reply_to_id is not None:
+        if reply_parameters := reply_parameters_to_bot_api(peer, message):
+            result["reply_parameters"] = reply_parameters
         reply_to = await MessageRef.get_or_none(id=message.reply_to_id).select_related(
             "content", "content__author", "peer", "peer__user",
         )
@@ -192,8 +218,8 @@ async def message_to_bot_api(
 
     if content.media_id is not None:
         await content.fetch_related("media", "media__file")
-        if content.media is not None and content.media.file is not None:
-            result.update(await serialize_media_field(content.media.file, content.media))
+        if content.media is not None and (media_fields := await serialize_message_media_to_bot_api(content.media)):
+            result.update(media_fields)
 
     return result
 

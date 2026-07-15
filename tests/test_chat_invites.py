@@ -69,6 +69,96 @@ async def test_get_chat_invite_info_after_exporting_new_link_with_revoking_exist
         
 
 @pytest.mark.asyncio
+async def test_supergroup_join_sees_prejoin_history() -> None:
+    from piltover.db.models import Channel, ChatParticipant
+
+    async with TestClient(phone_number="123456789") as client1, TestClient(phone_number="1234567890") as client2:
+        group = await client1.create_supergroup("history group")
+        await client1.send_message(group.id, "before join 1")
+        await client1.send_message(group.id, "before join 2")
+
+        invite_link = await group.export_invite_link()
+        joined = await client2.join_chat(invite_link)
+        assert joined.id == group.id
+
+        db_channel = await Channel.get(id=Channel.norm_id(get_channel_id(group.id)))
+        participant = await ChatParticipant.get(user_id=client2.me.id, channel_id=db_channel.id)
+        assert participant.min_message_id is None
+
+        messages = [m async for m in client2.get_chat_history(group.id)]
+        texts = [m.text for m in messages if m.text]
+        assert "before join 1" in texts
+        assert "before join 2" in texts
+
+
+@pytest.mark.asyncio
+async def test_supergroup_join_sees_history_after_prehistory_disabled() -> None:
+    from pyrogram.raw.functions.channels import TogglePreHistoryHidden
+    from pyrogram.raw.types import InputPeerChannel
+
+    from piltover.db.models import Channel, ChatParticipant
+
+    async with TestClient(phone_number="123456789") as client1, TestClient(phone_number="1234567890") as client2:
+        group = await client1.create_supergroup("history group 2")
+        await client1.send_message(group.id, "old message")
+
+        db_channel = await Channel.get(id=Channel.norm_id(get_channel_id(group.id)))
+        peer = await client1.resolve_peer(group.id)
+        assert isinstance(peer, InputPeerChannel)
+
+        await client1.invoke(TogglePreHistoryHidden(channel=peer, enabled=True))
+        await client1.invoke(TogglePreHistoryHidden(channel=peer, enabled=False))
+
+        await db_channel.refresh_from_db()
+        assert db_channel.hidden_prehistory is False
+        assert db_channel.min_available_id is not None
+
+        invite_link = await group.export_invite_link()
+        await client2.join_chat(invite_link)
+
+        participant = await ChatParticipant.get(user_id=client2.me.id, channel_id=db_channel.id)
+        assert participant.min_message_id == db_channel.min_available_id
+
+        messages = [m async for m in client2.get_chat_history(group.id)]
+        texts = [m.text for m in messages if m.text]
+        assert "old message" not in texts
+
+
+@pytest.mark.asyncio
+async def test_public_supergroup_join_sees_full_history() -> None:
+    from faker import Faker
+    from pyrogram.raw.functions.channels import TogglePreHistoryHidden
+    from pyrogram.raw.types import InputPeerChannel
+
+    from piltover.db.models import Channel, ChatParticipant
+
+    faker = Faker()
+    async with TestClient(phone_number="123456789") as client1, TestClient(phone_number="1234567890") as client2:
+        group = await client1.create_supergroup("public history group")
+        await client1.send_message(group.id, "before public")
+
+        peer = await client1.resolve_peer(group.id)
+        assert isinstance(peer, InputPeerChannel)
+        await client1.invoke(TogglePreHistoryHidden(channel=peer, enabled=True))
+        await client1.invoke(TogglePreHistoryHidden(channel=peer, enabled=False))
+
+        username = faker.user_name()
+        await client1.set_chat_username(group.id, username)
+
+        db_channel = await Channel.get(id=Channel.norm_id(get_channel_id(group.id)))
+        assert db_channel.min_available_id is not None
+
+        await client2.join_chat(username)
+
+        participant = await ChatParticipant.get(user_id=client2.me.id, channel_id=db_channel.id)
+        assert participant.min_message_id is None
+
+        messages = [m async for m in client2.get_chat_history(group.id)]
+        texts = [m.text for m in messages if m.text]
+        assert "before public" in texts
+
+
+@pytest.mark.asyncio
 async def test_join_chat_invite() -> None:
     async with TestClient(phone_number="123456789") as client1, TestClient(phone_number="1234567890") as client2:
         group = await client1.create_group("idk", [])

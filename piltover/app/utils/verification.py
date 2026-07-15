@@ -8,14 +8,32 @@ if TYPE_CHECKING:
     from piltover.db.models import User, Chat, Channel
 
 
+async def set_user_support(user: User, support: bool) -> bool:
+    if user.support == support:
+        return False
+
+    from piltover.cache import Cache
+    from piltover.db.models import State
+
+    user.support = support
+    await user.save(update_fields=["support"])
+    await user.inc_version()
+    await Cache.obj.delete(user._cache_key())
+    await State.get_or_create(user=user, defaults={"pts": 0})
+    await upd.update_user(user)
+    return True
+
+
 async def set_user_verified(user: User, verified: bool) -> bool:
     if user.verified == verified:
         return False
 
+    from piltover.cache import Cache
     from piltover.db.models import State
 
     user.verified = verified
     await user.save(update_fields=["verified"])
+    await Cache.obj.delete(user._cache_key())
     await user.inc_version()
     await State.get_or_create(user=user, defaults={"pts": 0})
     await upd.update_user(user)

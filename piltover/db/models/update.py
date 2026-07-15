@@ -330,7 +330,7 @@ class Update(Model):
                 return UpdateMessagePoll(
                     poll_id=poll.id,
                     poll=poll.to_tl(),
-                    results=await poll.to_tl_results(),
+                    results=await poll.to_tl_results(for_update=True),
                 )
 
             case UpdateType.UPDATE_FOLDER:

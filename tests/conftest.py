@@ -410,6 +410,7 @@ async def test_channel(faker: Faker) -> ChannelFactory:
                 owner, peer_channel, None, None, False,
                 author=owner, type=MessageType.SERVICE_CHANNEL_CREATE,
                 extra_info=MessageActionChannelCreate(title=name).write(),
+                channel_post=not supergroup,
             )
 
         return channel.make_id()

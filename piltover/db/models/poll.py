@@ -60,12 +60,12 @@ class Poll(Model):
     def _cache_key(self) -> str:
         return f"poll-results:{self.id}:f:{self.version}:{int(time() // self.CACHE_TTL)}"
 
-    async def to_tl_results(self) -> PollResultsBase:
+    async def to_tl_results(self, *, for_update: bool = False) -> PollResultsBase:
         if not self.pollanswers._fetched:
             raise RuntimeError("Poll answers must be prefetched")
 
         cache_key = self._cache_key()
-        if (cached := await Cache.obj.get(cache_key)) is not None:
+        if not for_update and (cached := await Cache.obj.get(cache_key)) is not None:
             return cached
 
         answer_ids = [answer.id for answer in self.pollanswers]
@@ -101,7 +101,10 @@ class Poll(Model):
             solution_entities=solution_entities,
         )
 
-        await Cache.obj.set(cache_key, results)
+        if for_update:
+            results.min_override = False
+        else:
+            await Cache.obj.set(cache_key, results)
         return results
 
     @classmethod

@@ -7,11 +7,12 @@ from piltover.tl.serialization_context import EMPTY_SERIALIZATION_CONTEXT, Seria
 
 
 class UserToFormat(types.UserToFormatInternal):
-    __slots__ = ("spam_blocked",)
+    __slots__ = ("spam_blocked", "support")
 
-    def __init__(self, *, spam_blocked: bool = False, **kwargs) -> None:
+    def __init__(self, *, spam_blocked: bool = False, support: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self.spam_blocked = spam_blocked
+        self.support = support
 
     def _write(self, ctx: SerializationContext) -> bytes:
         from piltover.db.enums import PrivacyRuleKeyType
@@ -31,7 +32,7 @@ class UserToFormat(types.UserToFormatInternal):
                 has_access_to_photo = rules[PrivacyRuleKeyType.PROFILE_PHOTO]
                 has_access_to_status = rules[PrivacyRuleKeyType.STATUS_TIMESTAMP]
 
-            if self.last_seen is not None:
+            if self.last_seen is not None and not self.support:
                 presence = Presence.to_tl_from_last_seen(self.last_seen, has_access_to_status)
         else:
             contact = None
@@ -79,6 +80,7 @@ class UserToFormat(types.UserToFormatInternal):
             mutual_contact=is_contact and current_is_contact,
             emoji_status=emoji_status,
             verified=self.verified,
+            support=self.support,
             restricted=restricted,
             restriction_reason=restriction_reason,
             premium=False,

@@ -3,7 +3,9 @@ from piltover.tl import EmojiList, StatsGraphError
 from piltover.tl.functions.account import GetCollectibleEmojiStatuses, GetContactSignUpNotification, \
     SetContactSignUpNotification, GetChannelRestrictedStatusEmojis
 from piltover.tl.functions.bots import GetPopularAppBots, GetBotRecommendations
-from piltover.tl.functions.channels import GetChannelRecommendations
+from piltover.app.utils.channel_recommendations import get_random_public_broadcast_channels
+from piltover.db.models import Channel
+from piltover.tl.functions.channels import GetChannelRecommendations, GetChannelRecommendations_167
 from piltover.tl.functions.contacts import GetSponsoredPeers
 from piltover.tl.functions.premium import GetBoostsStatus, GetMyBoosts, GetBoostsList
 from piltover.tl.functions.stats import GetBroadcastRevenueStats
@@ -97,6 +99,13 @@ async def get_broadcast_revenue_stats() -> BroadcastRevenueStats:  # pragma: no 
     )
 
 
-@handler.on_request(GetChannelRecommendations, NOBOT_NOAUTH)
-async def get_channel_recommendations():  # pragma: no cover
-    return Chats(chats=[])
+@handler.on_request(GetChannelRecommendations, NOBOT_NOAUTH | ReqHandlerFlags.DONT_FETCH_USER)
+@handler.on_request(GetChannelRecommendations_167, NOBOT_NOAUTH | ReqHandlerFlags.DONT_FETCH_USER)
+async def get_channel_recommendations(
+        request: GetChannelRecommendations | GetChannelRecommendations_167, user_id: int,
+) -> Chats:
+    exclude_id = None
+    if request.channel is not None:
+        exclude_id = Channel.norm_id(request.channel.channel_id)
+    channels = await get_random_public_broadcast_channels(exclude_id=exclude_id)
+    return Chats(chats=await Channel.to_tl_bulk(channels))

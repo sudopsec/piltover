@@ -36,6 +36,7 @@ _PEER_FULL_USER_ONLY = (
     "user__deleted",
     "user__read_dates_private",
     "user__verified",
+    "user__support",
     "user__spam_blocked",
     "user__version",
     "user__accent_color_id",

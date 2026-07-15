@@ -5,6 +5,7 @@ from os import urandom
 from time import time
 
 import pytest
+from faker import Faker
 from PIL import Image
 from fastrand import xorshift128plus_bytes
 from pyrogram.enums import MessageEntityType
@@ -14,11 +15,11 @@ from pyrogram.raw.functions.channels import GetMessages as GetMessagesChannel, S
     DeleteMessages as ChannelDeleteMessages, ReadHistory as ChannelReadHistory
 from pyrogram.raw.functions.messages import GetHistory, DeleteHistory, GetMessages, GetUnreadMentions, ReadMentions, \
     GetSearchResultsCalendar, EditMessage, DeleteScheduledMessages, SetHistoryTTL, SaveDraft, GetMessagesViews, \
-    SendMessage, ForwardMessages, ReadDiscussion, GetDiscussionMessage
+    SendMessage, ForwardMessages, ReadDiscussion, GetDiscussionMessage, GetReplies, SendVote
 from pyrogram.raw.types import InputPeerSelf, InputMessageID, InputMessageReplyTo, InputChannel, \
     InputMessagesFilterPhotoVideo, UpdateNewMessage, UpdateDeleteScheduledMessages, UpdateDeleteMessages, \
     UpdateNewChannelMessage, UpdateEditChannelMessage, UpdateDraftMessage, DraftMessage, DraftMessageEmpty, Updates, \
-    UpdateMessageID, MessageMediaPoll
+    UpdateMessageID, MessageMediaPoll, UpdateMessagePoll
 from pyrogram.raw.types.messages import Messages, AffectedHistory, SearchResultsCalendar
 from pyrogram.types import InputMediaDocument, ChatPermissions
 from tortoise.expressions import F, Subquery
@@ -99,6 +100,50 @@ async def test_delete_text_message_in_chat_with_self() -> None:
 
         messages = [msg async for msg in client.get_chat_history("me")]
         assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_pin_message_notifies_other_group_member(client_with_auth: ClientFactory) -> None:
+    from pyrogram.raw.functions.messages import UpdatePinnedMessage
+    from pyrogram.raw.types import MessageService, MessageActionPinMessage, InputPrivacyKeyChatInvite, \
+        InputPrivacyValueAllowUsers, UpdateNewMessage, UpdatePinnedMessages
+
+    client1 = await client_with_auth(run=True)
+    client2 = await client_with_auth(run=True)
+
+    await client1.set_username("pin_test1")
+    await client2.set_username("pin_test2")
+    user2 = await client1.get_users("pin_test2")
+    await client2.get_users("pin_test1")
+
+    await client2.set_privacy(
+        InputPrivacyKeyChatInvite(),
+        InputPrivacyValueAllowUsers(users=[await client2.resolve_peer("pin_test1")]),
+    )
+
+    group = await client1.create_group("pin group", [user2.id])
+    message = await client1.send_message(group.id, "pin me")
+    client2.clear_updates(UpdateNewMessage)
+    client2.clear_updates(UpdatePinnedMessages)
+
+    await client1.invoke(UpdatePinnedMessage(
+        peer=await client1.resolve_peer(group.id),
+        id=message.id,
+        pm_oneside=True,
+    ))
+
+    pin_service = None
+    for _ in range(20):
+        try:
+            update = await client2.expect_update(UpdateNewMessage, 0.5)
+        except TimeoutError:
+            continue
+        if isinstance(update.message, MessageService) and isinstance(update.message.action, MessageActionPinMessage):
+            pin_service = update.message
+            break
+
+    assert pin_service is not None
+    await client2.expect_update(UpdatePinnedMessages, 1.0)
 
 
 @pytest.mark.asyncio
@@ -784,6 +829,53 @@ async def test_get_unread_mentions_and_read_them_in_channel(exit_stack: AsyncExi
 
 
 @pytest.mark.asyncio
+async def test_read_channel_message_contents_with_multiple_unread_mentions(exit_stack: AsyncExitStack) -> None:
+    from piltover.db.models import Channel, MessageMention, MessageRef, Peer, User
+    from piltover.tl import InputChannel
+    from piltover.tl.functions.channels import ReadMessageContents
+
+    client1: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
+    client2: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="1234567890"))
+
+    await client1.set_username("test1_username")
+    await client2.set_privacy(
+        InputPrivacyKeyChatInvite(),
+        InputPrivacyValueAllowUsers(users=[await client2.resolve_peer("test1_username")]),
+    )
+    await client2.set_username("test2_username")
+
+    group = await client1.create_supergroup("idk")
+    await client2.join_chat(await group.export_invite_link())
+
+    await client1.send_message(group.id, "mention1 @test2_username")
+    await client1.send_message(group.id, "mention2 @test2_username")
+
+    from pyrogram.utils import get_channel_id
+
+    channel_peer = await client2.resolve_peer(group.id)
+    channel = await Channel.get(id=Channel.norm_id(get_channel_id(group.id)))
+    channel_peer_db = await Peer.get(channel_id=channel.id, owner_id__isnull=True)
+    user2 = await User.get(phone_number=client2.phone_number)
+    assert await MessageMention.filter(user_id=user2.id, unread_target_id__isnull=False).count() == 2
+
+    mention_content_ids = await MessageMention.filter(user_id=user2.id).values_list("message_id", flat=True)
+    mention_refs = await MessageRef.filter(
+        peer=channel_peer_db, content_id__in=mention_content_ids,
+    ).order_by("id")
+    assert len(mention_refs) == 2
+
+    result = await client2.invoke_p(ReadMessageContents(
+        channel=InputChannel(channel_id=channel_peer.channel_id, access_hash=channel_peer.access_hash),
+        id=[mention_refs[0].id],
+    ))
+    assert result is True
+
+    unread_mentions = await MessageMention.filter(user_id=user2.id, unread_target_id__isnull=False)
+    assert len(unread_mentions) == 1
+    assert unread_mentions[0].message_id == mention_refs[1].content_id
+
+
+@pytest.mark.asyncio
 async def test_mention_user_in_chat_with_reply(exit_stack: AsyncExitStack) -> None:
     client1: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
     client2: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="1234567890"))
@@ -1195,6 +1287,96 @@ async def test_send_message_to_channel_with_discussion_group(exit_stack: AsyncEx
 
 
 @pytest.mark.asyncio
+async def test_open_channel_comments_before_async_thread(exit_stack: AsyncExitStack) -> None:
+    client: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
+
+    channel = await client.create_channel("idk channel")
+    group = await client.create_supergroup("idk group")
+
+    await client.invoke(SetDiscussionGroup(
+        broadcast=await client.resolve_peer(channel.id),
+        group=await client.resolve_peer(group.id),
+    ))
+
+    async with client.expect_updates_m(UpdateNewChannelMessage, timeout_per_update=1):
+        message = await client.send_message(channel.id, "test message")
+
+    discussion = await client.invoke(GetDiscussionMessage(
+        peer=await client.resolve_peer(channel.id),
+        msg_id=message.id,
+    ))
+    assert len(discussion.messages) == 1
+
+    replies = await client.invoke(GetReplies(
+        peer=await client.resolve_peer(channel.id),
+        msg_id=message.id,
+        offset_id=0,
+        offset_date=0,
+        add_offset=0,
+        limit=50,
+        max_id=0,
+        min_id=0,
+        hash=0,
+    ))
+    assert replies.messages == []
+
+    result = await client.invoke(ReadDiscussion(
+        peer=await client.resolve_peer(channel.id),
+        msg_id=message.id,
+        read_max_id=discussion.messages[0].id,
+    ))
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_public_channel_discussion_comment_without_join(
+        exit_stack: AsyncExitStack, faker: Faker,
+) -> None:
+    from pyrogram.utils import get_channel_id
+
+    from piltover.db.models import Channel
+
+    client1: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
+    client2: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="1234567890"))
+
+    channel = await client1.create_channel("public comments channel")
+    group = await client1.create_supergroup("linked group")
+
+    await client1.invoke(SetDiscussionGroup(
+        broadcast=await client1.resolve_peer(channel.id),
+        group=await client1.resolve_peer(group.id),
+    ))
+
+    username = faker.user_name()
+    await client1.set_chat_username(channel.id, username)
+
+    async with client1.expect_updates_m(UpdateNewChannelMessage, timeout_per_update=1):
+        message = await client1.send_message(channel.id, "post with comments")
+
+    await client1.expect_updates(UpdateEditChannelMessage, timeout_per_update=1)
+
+    discussion_group = await Channel.get(id=Channel.norm_id(get_channel_id(group.id)))
+    assert discussion_group.nojoin_allow_view is True
+
+    discussion_message = await client2.get_discussion_message(username, message.id)
+    comment = await discussion_message.reply("comment without join")
+    assert comment.text == "comment without join"
+
+    replies = await client2.invoke(GetReplies(
+        peer=await client2.resolve_peer(discussion_message.chat.id),
+        msg_id=discussion_message.id,
+        offset_id=discussion_message.id,
+        offset_date=0,
+        add_offset=-50,
+        limit=50,
+        max_id=0,
+        min_id=0,
+        hash=0,
+    ))
+    assert any(getattr(m, "message", None) == "comment without join" for m in replies.messages)
+
+
+@pytest.mark.asyncio
 async def test_send_message_to_channel_comments(exit_stack: AsyncExitStack) -> None:
     client: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
 
@@ -1235,6 +1417,34 @@ async def test_send_message_to_channel_comments(exit_stack: AsyncExitStack) -> N
     result = await client.invoke(ReadDiscussion(
         peer=await client.resolve_peer(channel.id),
         msg_id=message.id,
+        read_max_id=comment.id,
+    ))
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_read_discussion_with_discussion_group_peer(exit_stack: AsyncExitStack) -> None:
+    client: TestClient = await exit_stack.enter_async_context(TestClient(phone_number="123456789"))
+
+    channel = await client.create_channel("idk channel")
+    group = await client.create_supergroup("idk group")
+
+    await client.invoke(SetDiscussionGroup(
+        broadcast=await client.resolve_peer(channel.id),
+        group=await client.resolve_peer(group.id),
+    ))
+
+    async with client.expect_updates_m(UpdateNewChannelMessage, timeout_per_update=1):
+        message = await client.send_message(channel.id, "test message")
+
+    await client.expect_updates(UpdateEditChannelMessage, timeout_per_update=1)
+
+    discussion_message = await client.get_discussion_message(channel.id, message.id)
+    comment = await discussion_message.reply("idk")
+
+    result = await client.invoke(ReadDiscussion(
+        peer=await client.resolve_peer(group.id),
+        msg_id=discussion_message.id,
         read_max_id=comment.id,
     ))
     assert result is True
@@ -1645,11 +1855,6 @@ async def test_message_poll_min_flag(client_with_auth: ClientFactory) -> None:
 
     await client.vote_poll("me", message.id, 0)
 
-    # TODO: remove, voting in a poll should invalidate cache automatically
-    await MessageContent.filter(
-        id__in=Subquery(MessageRef.filter(id=message.id).values("content_id"))
-    ).update(version=F("version") + 1)
-
     messages_raw = await client.invoke(GetMessages(id=[InputMessageID(id=message.id)]))
     message_raw = messages_raw.messages[0]
     poll_raw = message_raw.media
@@ -1660,3 +1865,45 @@ async def test_message_poll_min_flag(client_with_auth: ClientFactory) -> None:
     for result in poll_raw.results.results[1:]:
         assert result.voters == 0
         assert not result.chosen
+
+
+@pytest.mark.asyncio
+async def test_message_poll_retract_invalidates_cache(client_with_auth: ClientFactory) -> None:
+    client = await client_with_auth(run=True)
+
+    message = await client.send_poll("me", "test poll", ["answer 1", "answer 2"])
+    await client.vote_poll("me", message.id, 0)
+
+    messages_raw = await client.invoke(GetMessages(id=[InputMessageID(id=message.id)]))
+    poll_raw = messages_raw.messages[0].media
+    assert isinstance(poll_raw, MessageMediaPoll)
+    assert poll_raw.results.results[0].chosen
+    assert poll_raw.results.results[0].voters == 1
+
+    await client.retract_vote("me", message.id)
+
+    messages_raw = await client.invoke(GetMessages(id=[InputMessageID(id=message.id)]))
+    poll_raw = messages_raw.messages[0].media
+    assert isinstance(poll_raw, MessageMediaPoll)
+    assert poll_raw.results.min
+    assert not poll_raw.results.results[0].chosen
+    assert poll_raw.results.results[0].voters == 0
+
+
+@pytest.mark.asyncio
+async def test_message_poll_retract_update_has_full_results(client_with_auth: ClientFactory) -> None:
+    client = await client_with_auth(run=True)
+
+    message = await client.send_poll("me", "test poll", ["answer 1", "answer 2"])
+    await client.vote_poll("me", message.id, 0)
+
+    result = await client.invoke(SendVote(peer=InputPeerSelf(), msg_id=message.id, options=[]))
+    poll_updates = [u for u in result.updates if isinstance(u, UpdateMessagePoll)]
+    assert len(poll_updates) == 1
+
+    poll_update = poll_updates[0]
+    assert not poll_update.results.min
+    assert poll_update.results.total_voters == 0
+    for option in poll_update.results.results:
+        assert not option.chosen
+        assert option.voters == 0

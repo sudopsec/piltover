@@ -63,6 +63,7 @@ class ChannelMessageToFormat(types.ChannelMessageToFormatInternal):
                 from_id=self.content.from_id,
                 mentioned=mentioned,
                 media_unread=media_unread,
+                post=self.content.post,
                 ttl_period=self.content.ttl_period,
             )
         else:

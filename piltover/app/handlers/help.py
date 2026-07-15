@@ -74,7 +74,7 @@ async def get_config(user_id: int | None):
         call_ring_timeout_ms=20_000,
         call_connect_timeout_ms=20_000,
         call_packet_timeout_ms=5_000,
-        me_url_prefix="https://127.0.0.1/",
+        me_url_prefix="https://t.me/",
         caption_length_max=APP_CONFIG.max_caption_length,  # Telegram default is 1024
         message_length_max=APP_CONFIG.max_message_length,
         webfile_dc_id=APP_CONFIG.this_dc,
@@ -96,7 +96,9 @@ async def get_nearest_dc():  # pragma: no cover
 
 @handler.on_request(GetSupport, ReqHandlerFlags.BOT_NOT_ALLOWED)
 async def get_support() -> Support:
-    support_user = await User.get_or_none(id=777000, system=True)
+    support_user = await User.get_or_none(support=True, deleted=False)
+    if support_user is None:
+        support_user = await User.get_or_none(id=777000, system=True)
     if support_user is None:
         support_user = await User.get(id=777000)
     return Support(

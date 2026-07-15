@@ -21,6 +21,8 @@ _CFG_FIELD_MAP = {
     "groups": "group_creation_enabled",
     "channels": "channel_creation_enabled",
     "calls": "phone_calls_enabled",
+    "verifybot": "verifybot_enabled",
+    "stars": "stars_bot_enabled",
 }
 
 

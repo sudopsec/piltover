@@ -152,32 +152,22 @@ async def get_available_effects() -> AvailableEffects:  # pragma: no cover
     )
 
 
-@handler.on_request(GetSponsoredMessages_133, ReqHandlerFlags.AUTH_NOT_REQUIRED)
-@handler.on_request(GetSponsoredMessages, ReqHandlerFlags.AUTH_NOT_REQUIRED)
-async def get_sponsored_messages() -> SponsoredMessages | SponsoredMessagesEmpty:  # pragma: no cover
-    return SponsoredMessagesEmpty()
+@handler.on_request(GetSponsoredMessages, ReqHandlerFlags.DONT_FETCH_USER)
+async def get_sponsored_messages(
+        request: GetSponsoredMessages, user_id: int,
+) -> SponsoredMessages | SponsoredMessagesEmpty:
+    from piltover.app.utils.test_sponsored_messages import build_channel_sponsored_messages
+    from piltover.db.models import Channel
+    from piltover.tl import InputPeerChannel
 
-    # return SponsoredMessages(
-    #     messages=[
-    #         SponsoredMessage(
-    #             recommended=True,
-    #             can_report=True,
-    #             random_id=urandom(16),
-    #             url="t.me",
-    #             title=f"{i}",
-    #             message=f"{i}",
-    #             entities=None,
-    #             photo=None,
-    #             media=None,
-    #             color=None,
-    #             button_text=f"{i}",
-    #             sponsor_info=None,
-    #             additional_info=None,
-    #         ) for i in range(10000)
-    #     ],
-    #     chats=[],
-    #     users=[],
-    # )
+    if not isinstance(request.peer, InputPeerChannel):
+        return SponsoredMessagesEmpty()
+
+    channel = await Channel.get_from_input(user_id, request.peer)
+    if channel is None or not channel.channel:
+        return SponsoredMessagesEmpty()
+
+    return await build_channel_sponsored_messages(channel)
 
 
 @handler.on_request(Report, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)

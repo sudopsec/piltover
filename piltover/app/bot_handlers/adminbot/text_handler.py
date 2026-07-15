@@ -7,6 +7,9 @@ from piltover.app.bot_handlers.adminbot.utils import send_bot_message
 from piltover.app.bot_handlers.interaction_handler import BotInteractionHandler
 from piltover.app.utils.admin_channel_ops import transfer_channel_owner, transfer_chat_owner
 from piltover.app.utils.admin_bot_edit import apply_bot_field_value
+from piltover.app.utils.admin_entity_edit import (
+    apply_channel_field_value, apply_group_field_value, apply_user_field_value,
+)
 from piltover.app.utils.admin_lookup import (
     resolve_bot_query, resolve_channel_query, resolve_chat_query, resolve_user_query, search_users_substring,
 )
@@ -49,6 +52,14 @@ class AdminBotTextHandler(BotInteractionHandler[AdminBotState, AdminBotUserState
             .set_send_message_func(send_bot_message)
             .when(state=AdminBotState.WAIT_BOT_EDIT)
             .do(self._bot_edit)
+            .delete_state()
+            .register()
+        )
+        (
+            self.text()
+            .set_send_message_func(send_bot_message)
+            .when(state=AdminBotState.WAIT_ENTITY_EDIT)
+            .do(self._entity_edit)
             .delete_state()
             .register()
         )
@@ -166,6 +177,69 @@ class AdminBotTextHandler(BotInteractionHandler[AdminBotState, AdminBotUserState
         if menu_id is None:
             return None
         return await MessageRef.get_or_none(id=menu_id).select_related("content", "peer")
+
+    @staticmethod
+    async def _resolve_entity_edit_menu(menu_id: int | None) -> MessageRef | None:
+        if menu_id is None:
+            return None
+        return await MessageRef.get_or_none(id=menu_id).select_related("content", "peer")
+
+    @staticmethod
+    async def _entity_edit(peer: Peer, message: MessageRef, state: AdminBotUserState) -> MessageRef:
+        text = (message.content.message or "").strip()
+        payload = (state.data or b"").decode()
+        parts = payload.split(":")
+        if len(parts) < 4:
+            return await send_bot_message(peer, "Сессия истекла.")
+
+        kind, field, entity_id_str, list_key = parts[0], parts[1], parts[2], parts[3]
+        menu_id = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else None
+        entity_id = int(entity_id_str)
+        menu_ref = await AdminBotTextHandler._resolve_entity_edit_menu(menu_id)
+        clear = text in {"-", "—", "clear", "none", "empty", "очистить", "пусто"}
+
+        if kind == "user":
+            user = await User.get_or_none(id=entity_id, bot=False, deleted=False)
+            if user is None:
+                return await send_bot_message(peer, "Пользователь не найден.")
+            error = await apply_user_field_value(user, field, text, clear=clear)
+            if error is not None:
+                return await send_bot_message(peer, error)
+            if menu_ref is not None:
+                return await pages_extended.page_user_settings(peer, entity_id, menu_ref, list_key=list_key)
+            return await pages_extended.page_user_settings(
+                peer, entity_id, message, list_key=list_key, new_message=True,
+            )
+
+        if kind == "ch":
+            from piltover.db.models import Channel
+            channel = await Channel.get_or_none(id=entity_id, deleted=False)
+            if channel is None:
+                return await send_bot_message(peer, "Канал не найден.")
+            error = await apply_channel_field_value(channel, field, text, clear=clear)
+            if error is not None:
+                return await send_bot_message(peer, error)
+            if menu_ref is not None:
+                return await pages_extended.page_channel_settings(peer, entity_id, menu_ref, list_key=list_key)
+            return await pages_extended.page_channel_settings(
+                peer, entity_id, message, list_key=list_key, new_message=True,
+            )
+
+        if kind == "gr":
+            from piltover.db.models import Chat
+            chat = await Chat.get_or_none(id=entity_id, deleted=False, migrated=False)
+            if chat is None:
+                return await send_bot_message(peer, "Группа не найдена.")
+            error = await apply_group_field_value(chat, field, text, clear=clear)
+            if error is not None:
+                return await send_bot_message(peer, error)
+            if menu_ref is not None:
+                return await pages_extended.page_group_settings(peer, entity_id, menu_ref, list_key=list_key)
+            return await pages_extended.page_group_settings(
+                peer, entity_id, message, list_key=list_key, new_message=True,
+            )
+
+        return await send_bot_message(peer, "Неизвестная сущность.")
 
     @staticmethod
     async def _bot_edit(peer: Peer, message: MessageRef, state: AdminBotUserState) -> MessageRef:

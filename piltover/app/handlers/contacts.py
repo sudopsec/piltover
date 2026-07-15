@@ -12,11 +12,12 @@ import piltover.app.utils.updates_manager as upd
 from piltover.config import APP_CONFIG
 from piltover.db.enums import PeerType, PrivacyRuleKeyType
 from piltover.db.models import User, Peer, Contact, Username, Dialog, Presence, Channel, PrivacyRuleException, \
-    PrivacyRule
+    PrivacyRule, Chat
 from piltover.enums import ReqHandlerFlags
 from piltover.exceptions import ErrorRpc, Unreachable
 from piltover.tl import ContactBirthday, Updates, Contact as TLContact, PeerBlocked, ImportedContact, \
-    ExportedContactToken, Long, TLObjectVector, PeerUser, ContactStatus, PeerChannel, LongVector
+    ExportedContactToken, Long, TLObjectVector, PeerUser, ContactStatus, PeerChannel, LongVector, TopPeer, \
+    TopPeerCategoryPeers, TopPeerCategoryCorrespondents, TopPeerCategoryGroups, TopPeerCategoryChannels
 from piltover.tl.functions.contacts import ResolveUsername, GetBlocked, Search, GetTopPeers, GetStatuses, \
     GetContacts, GetBirthdays, ResolvePhone, AddContact, DeleteContacts, Block, Unblock, Block_133, Unblock_133, \
     ResolveUsername_133, ImportContacts, ExportContactToken, ImportContactToken, GetContactIDs
@@ -168,13 +169,80 @@ async def contacts_search(request: Search, user_id: int) -> Found:
     )
 
 
-@handler.on_request(GetTopPeers, ReqHandlerFlags.AUTH_NOT_REQUIRED | ReqHandlerFlags.BOT_NOT_ALLOWED)
-async def get_top_peers():  # pragma: no cover
-    # TODO: implement GetTopPeers
+async def _top_peers_from_dialogs(
+        user_id: int, peer_types: tuple[PeerType, ...], offset: int, limit: int,
+        *, exclude_self: bool = False, exclude_blocked: bool = False,
+) -> tuple[list[TopPeer], list[User], list[Chat], list[Channel]]:
+    query = Dialog.filter(owner_id=user_id, visible=True, peer__type__in=peer_types)
+    if exclude_self:
+        query = query.exclude(peer__type=PeerType.SELF)
+    if exclude_blocked:
+        query = query.filter(Q(peer__type__not=PeerType.USER) | Q(peer__blocked_at__isnull=True))
+
+    dialogs = await query.order_by(
+        "-peer__last_message_id", "-id",
+    ).offset(offset).limit(limit).select_related("peer", "peer__user", "peer__chat", "peer__channel")
+
+    top_peers: list[TopPeer] = []
+    users: list[User] = []
+    chats: list[Chat] = []
+    channels: list[Channel] = []
+
+    for dialog in dialogs:
+        peer = dialog.peer
+        if exclude_self and peer.type is PeerType.USER and peer.user_id == user_id:
+            continue
+        top_peers.append(TopPeer(peer=peer.to_tl(), rating=float(peer.last_message_id or 0)))
+        if peer.type is PeerType.USER and peer.user is not None:
+            users.append(peer.user)
+        elif peer.type is PeerType.CHAT and peer.chat is not None:
+            chats.append(peer.chat)
+        elif peer.type is PeerType.CHANNEL and peer.channel is not None:
+            channels.append(peer.channel)
+
+    return top_peers, users, chats, channels
+
+
+@handler.on_request(GetTopPeers, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
+async def get_top_peers(request: GetTopPeers, user_id: int) -> TopPeers:
+    limit = max(1, min(100, request.limit))
+    offset = max(0, request.offset)
+
+    categories: list[TopPeerCategoryPeers] = []
+    users_by_id: dict[int, User] = {}
+    chats_by_id: dict[int, Chat] = {}
+    channels_by_id: dict[int, Channel] = {}
+
+    category_specs: list[tuple[object, tuple[PeerType, ...], bool, bool]] = []
+    if request.correspondents:
+        category_specs.append((TopPeerCategoryCorrespondents(), (PeerType.USER,), True, True))
+    if request.groups:
+        category_specs.append((TopPeerCategoryGroups(), (PeerType.CHAT,), False, False))
+    if request.channels:
+        category_specs.append((TopPeerCategoryChannels(), (PeerType.CHANNEL,), False, False))
+
+    for category, peer_types, exclude_self, exclude_blocked in category_specs:
+        top_peers, users, chats, channels = await _top_peers_from_dialogs(
+            user_id, peer_types, offset, limit,
+            exclude_self=exclude_self, exclude_blocked=exclude_blocked,
+        )
+        if not top_peers:
+            continue
+        categories.append(TopPeerCategoryPeers(category=category, count=len(top_peers), peers=top_peers))
+        for user in users:
+            users_by_id[user.id] = user
+        for chat in chats:
+            chats_by_id[chat.id] = chat
+        for channel in channels:
+            channels_by_id[channel.id] = channel
+
+    chats_tl = await Chat.to_tl_bulk(list(chats_by_id.values()))
+    chats_tl.extend(await Channel.to_tl_bulk(list(channels_by_id.values())))
+
     return TopPeers(
-        categories=[],
-        chats=[],
-        users=[],
+        categories=categories,
+        chats=chats_tl,
+        users=await User.to_tl_bulk(list(users_by_id.values())),
     )
 
 

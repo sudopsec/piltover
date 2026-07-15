@@ -1,17 +1,42 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 from typing import Any
 from uuid import uuid4
 
 from piltover.app.utils.utils import process_reply_markup
+from piltover.config import DICE_CONFIG
 from piltover.context import request_ctx
 from piltover.db.enums import FileType, MediaType
 from piltover.db.models import File, MessageMedia, UploadingFile, UploadingFilePart, User
 from piltover.exceptions import ErrorRpc
-from piltover.tl import DocumentAttributeFilename
+from piltover.tl import DocumentAttributeFilename, MessageMediaDice
+from piltover.utils.fastrand_shim import xorshift128plusrandint
 
 UploadedFile = tuple[str, bytes, str | None]
+
+_DEFAULT_DICE_EMOJI = "\U0001F3B2"
+_DICE_EMOJI_ALIASES = {
+    "\u26bd\ufe0f": "\u26bd",
+}
+
+
+def normalize_dice_emoji(emoji: str) -> str:
+    return _DICE_EMOJI_ALIASES.get(emoji, emoji)
+
+
+async def make_dice_media(emoji: str = _DEFAULT_DICE_EMOJI) -> MessageMedia:
+    emoji = normalize_dice_emoji(emoji)
+    if emoji not in DICE_CONFIG:
+        raise ErrorRpc(error_code=400, error_message="Bad Request: invalid dice emoji")
+    return await MessageMedia.create(
+        type=MediaType.DICE,
+        static_data=MessageMediaDice(
+            value=xorshift128plusrandint(1, DICE_CONFIG[emoji][0]),
+            emoticon=emoji,
+        ).write(),
+    )
 
 
 async def resolve_bot_api_file(
@@ -24,7 +49,10 @@ async def resolve_bot_api_file(
     if file_id is None:
         raise ErrorRpc(error_code=400, error_message="Bad Request: file is required")
 
-    file_id_int = int(file_id)
+    try:
+        file_id_int = int(file_id)
+    except (TypeError, ValueError) as exc:
+        raise ErrorRpc(error_code=400, error_message="Bad Request: invalid file_id") from exc
     file = await File.get_or_none(id=file_id_int)
     if file is None:
         raise ErrorRpc(error_code=400, error_message="Bad Request: invalid file_id")
@@ -86,6 +114,25 @@ def file_to_bot_api(file: File) -> dict[str, Any]:
     return result
 
 
+def serialize_dice_field(media: MessageMedia) -> dict[str, Any] | None:
+    if media.type is not MediaType.DICE or media.static_data is None:
+        return None
+    try:
+        dice = MessageMediaDice.read(BytesIO(media.static_data))
+    except Exception:
+        return None
+    emoji = normalize_dice_emoji(dice.emoticon)
+    return {"dice": {"emoji": emoji, "value": dice.value}}
+
+
+async def serialize_message_media_to_bot_api(media: MessageMedia) -> dict[str, Any] | None:
+    if dice := serialize_dice_field(media):
+        return dice
+    if media.file is not None:
+        return await serialize_media_field(media.file, media)
+    return None
+
+
 async def serialize_media_field(file: File, media: MessageMedia) -> dict[str, Any] | None:
     from piltover.db.enums import FileType as FT
 
@@ -121,6 +168,8 @@ async def process_outgoing_reply_markup(bot_user: User, params: dict[str, Any]) 
     if raw is None:
         return None
     markup = parse_reply_markup(raw)
+    if markup is None:
+        return None
     processed = await process_reply_markup(markup, bot_user)
     return processed.write() if processed is not None else None
 

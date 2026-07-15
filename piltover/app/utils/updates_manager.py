@@ -170,6 +170,57 @@ async def send_message(
     return result
 
 
+async def send_message_channel_user(
+        user_id: int, channel: Channel, message: MessageRef, *, ignore_current: bool = True,
+) -> Updates:
+    new_pts = await channel.add_pts(1)
+    await ChannelUpdate.create(
+        channel=channel,
+        type=ChannelUpdateType.NEW_MESSAGE,
+        message=message,
+        pts=new_pts,
+        pts_count=1,
+    )
+
+    ucc = UsersChatsChannels()
+    ucc.add_message(message.content_id)
+    users, chats, channels = await ucc.resolve()
+    chats_and_channels = [*chats, *channels]
+
+    message_for_user = await message.to_tl(user_id, False)
+
+    ctx = try_get_request_ctx()
+    ignore_auth_id = ctx.auth_id if ctx and ignore_current else None
+
+    await SessionManager.send(
+        UpdatesWithDefaults(
+            updates=[
+                UpdateNewChannelMessage(
+                    message=message_for_user,
+                    pts=new_pts,
+                    pts_count=0,
+                ),
+            ],
+            users=users,
+            chats=chats_and_channels,
+        ),
+        user_id=user_id,
+        ignore_auth_id=ignore_auth_id,
+    )
+
+    return UpdatesWithDefaults(
+        updates=[
+            UpdateNewChannelMessage(
+                message=message_for_user,
+                pts=new_pts,
+                pts_count=1,
+            ),
+        ],
+        users=users,
+        chats=chats_and_channels,
+    )
+
+
 async def send_message_channel(user_id: int, channel: Channel, message: MessageRef) -> Updates:
     new_pts = await channel.add_pts(1)
     await ChannelUpdate.create(
@@ -745,6 +796,7 @@ async def pin_messages(
     chats_and_channels = [*chats, *channels]
 
     messages_items = list(messages_by_peer.items())
+    peer_by_user_id = {peer.owner_id: peer for peer, _ in messages_items}
     ptss = await State.add_pts_bulk(
         [peer.owner_id for peer, _ in messages_items],
         [len(ids) for _, ids in messages_items],
@@ -820,6 +872,7 @@ async def pin_messages(
         await SessionManager.send(update, peer.owner_id)
 
     await Update.bulk_create(updates_to_create)
+    await SessionManager.send_internal_push(list(peer_by_user_id))
     return user_pts, user_pts_count, result_update
 
 
@@ -894,8 +947,11 @@ async def update_user(user: User) -> None:
     # TODO: create update to SELF here and then send a worker task to create updates for all other users.
     #  In worker task, dont fetch all peers, but rather latest N `visible` dialogs with user.
 
+    from piltover.cache import Cache
+
     updates_to_create = []
 
+    await Cache.obj.delete(user._cache_key())
     user_tl = await user.to_tl()
 
     # for peer in await Peer.filter(Q(user=user) | (Q(owner=user) & Q(type=PeerType.SELF))).select_related("owner"):
@@ -996,6 +1052,9 @@ async def update_chat_participants(chat: Chat, peers: list[Peer]) -> Updates:
 async def update_status(
         user: User, status: Presence, peers: list[Peer | User | int] | list[Peer] | list[User] | list[int],
 ) -> None:
+    if user.support:
+        return
+
     user_tl = await user.to_tl()
 
     for peer in peers:
@@ -1496,7 +1555,9 @@ async def update_chat_default_banned_rights(chat: Chat) -> Updates:
     return updates
 
 
-async def update_channel_for_user(channel: Channel, user: User | int) -> Updates:
+async def update_channel_for_user(
+        channel: Channel, user: User | int, *, ignore_current: bool = True,
+) -> Updates:
     user_id = user.id if isinstance(user, User) else user
 
     pts = await State.add_pts(user_id, 1)
@@ -1509,7 +1570,9 @@ async def update_channel_for_user(channel: Channel, user: User | int) -> Updates
         chats=[await channel.to_tl()],
     )
 
-    await SessionManager.send(updates, user_id)
+    ctx = try_get_request_ctx()
+    ignore_auth_id = ctx.auth_id if ctx and ignore_current else None
+    await SessionManager.send(updates, user_id, ignore_auth_id=ignore_auth_id)
     return updates
 
 
@@ -1527,7 +1590,7 @@ async def update_message_poll(poll: Poll, user_id: int) -> Updates:
             UpdateMessagePoll(
                 poll_id=poll.id,
                 poll=poll.to_tl(),
-                results=await poll.to_tl_results(),
+                results=await poll.to_tl_results(for_update=True),
             )
         ],
     )

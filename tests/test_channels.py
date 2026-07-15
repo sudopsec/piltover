@@ -5,11 +5,11 @@ from typing import cast
 import pytest
 from PIL import Image
 from faker import Faker
-from pyrogram.errors import UsernameOccupied, PasswordMissing, PasswordHashInvalid, \
+from pyrogram.errors import UsernameInvalid, UsernameOccupied, PasswordMissing, PasswordHashInvalid, \
     ChatAdminRequired, UserIdInvalid, PeerIdInvalid, ChannelPrivate, Forbidden, InviteHashExpired, UsernameNotModified, \
     ChatTitleEmpty, ChatAboutTooLong, RightForbidden, UsersTooMuch
 from pyrogram.raw.functions.account import GetPassword
-from pyrogram.raw.functions.channels import EditCreator, DeleteHistory
+from pyrogram.raw.functions.channels import CheckUsername as RawCheckUsername, EditCreator, DeleteHistory
 from pyrogram.raw.functions.updates import GetChannelDifference
 from pyrogram.raw.types import UpdateChannel, UpdateUserName, UpdateNewChannelMessage, InputUser, \
     InputPrivacyKeyChatInvite, InputPrivacyValueAllowUsers, InputPeerChannel, ChannelMessagesFilterEmpty, MessageService
@@ -20,7 +20,7 @@ from pyrogram.utils import compute_password_check
 from piltover.config import APP_CONFIG
 from piltover.tl import InputCheckPasswordEmpty, ChannelAdminLogEventActionChangeTitle
 from tests.client import TestClient
-from tests.conftest import ClientFactory, ChannelWithClientsFactory
+from tests.conftest import ClientFactory, ChannelWithClientsFactory, ChannelFactory
 from tests.utils import color_is_near
 
 PHOTO_COLOR = (0x00, 0xff, 0x80)
@@ -34,6 +34,143 @@ async def test_create_channel(client_with_auth: ClientFactory) -> None:
         channel = await client.create_channel("idk")
 
     assert channel.title == "idk"
+
+
+@pytest.mark.asyncio
+async def test_create_broadcast_channel_flags_and_service_action(client_with_auth: ClientFactory) -> None:
+    from io import BytesIO
+
+    from pyrogram.raw.functions.channels import CreateChannel as RawCreateChannel
+    from pyrogram.raw.types import MessageActionChannelCreate as RawMessageActionChannelCreate
+
+    from piltover.db.enums import MessageType
+    from piltover.db.models import Channel, MessageRef
+    from piltover.tl import TLObject
+    from piltover.tl.types import MessageActionChannelCreate
+
+    client = await client_with_auth(run=True)
+    result = await client.invoke(RawCreateChannel(title="Broadcast Test", about="", broadcast=True))
+
+    tl_channel = result.chats[0]
+    assert tl_channel.broadcast is True
+    assert tl_channel.megagroup is False
+
+    db_channel = await Channel.get(id=Channel.norm_id(tl_channel.id))
+    assert db_channel.channel is True
+    assert db_channel.supergroup is False
+
+    message = await MessageRef.filter(peer__channel_id=db_channel.id).select_related("content").first()
+    assert message.content.type is MessageType.SERVICE_CHANNEL_CREATE
+    action = TLObject.read(BytesIO(message.content.extra_info))
+    assert isinstance(action, MessageActionChannelCreate)
+    assert action.title == "Broadcast Test"
+
+    service_updates = [
+        upd for upd in result.updates
+        if isinstance(upd, UpdateNewChannelMessage) and isinstance(upd.message, MessageService)
+    ]
+    assert len(service_updates) == 1
+    service_message = service_updates[0].message
+    assert service_message.post is True
+    assert service_message.from_id is None
+    assert isinstance(service_message.action, RawMessageActionChannelCreate)
+    assert message.content.channel_post is True
+    assert message.content.to_tl_service_content().from_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_megagroup_service_message_has_from_id(client_with_auth: ClientFactory) -> None:
+    from pyrogram.raw.functions.channels import CreateChannel as RawCreateChannel
+    from pyrogram.raw.types import PeerUser
+
+    from piltover.db.enums import MessageType
+    from piltover.db.models import Channel, MessageRef, User
+
+    client = await client_with_auth(run=True)
+    result = await client.invoke(RawCreateChannel(title="Megagroup Test", about="", megagroup=True))
+
+    tl_channel = result.chats[0]
+    assert tl_channel.megagroup is True
+
+    db_channel = await Channel.get(id=Channel.norm_id(tl_channel.id))
+    message = await MessageRef.filter(peer__channel_id=db_channel.id).select_related("content").first()
+    assert message.content.type is MessageType.SERVICE_CHANNEL_CREATE
+    assert message.content.channel_post is False
+
+    service_updates = [
+        upd for upd in result.updates
+        if isinstance(upd, UpdateNewChannelMessage) and isinstance(upd.message, MessageService)
+    ]
+    assert len(service_updates) == 1
+    service_message = service_updates[0].message
+    assert service_message.post is False
+    creator = await User.get(phone_number=client.phone_number).only("id")
+    assert isinstance(service_message.from_id, PeerUser)
+    assert service_message.from_id.user_id == creator.id
+
+
+@pytest.mark.asyncio
+async def test_broadcast_channel_forbidden_keeps_broadcast_flag() -> None:
+    from io import BytesIO
+
+    from piltover.db.models import Channel, User
+    from piltover.tl import TLObject
+    from piltover.tl.serialization_context import SerializationContext
+    from piltover.tl.types import Channel as TLChannel, ChannelForbidden
+
+    user = await User.create(phone_number="900000099", first_name="Creator")
+    db_channel = await Channel.create(
+        name="Broadcast Forbidden", creator=user, channel=True, supergroup=False,
+    )
+    channel_tl = await db_channel.to_tl()
+
+    outsider_ctx = SerializationContext(auth_id=1, user_id=user.id + 1, layer=201)
+    outsider_obj = TLObject.read(BytesIO(channel_tl.write(outsider_ctx)))
+    assert isinstance(outsider_obj, ChannelForbidden)
+    assert outsider_obj.broadcast is True
+    assert outsider_obj.megagroup is False
+
+    creator_ctx = SerializationContext(auth_id=1, user_id=user.id, layer=201)
+    creator_obj = TLObject.read(BytesIO(channel_tl.write(creator_ctx)))
+    assert isinstance(creator_obj, TLChannel)
+    assert creator_obj.broadcast is True
+    assert creator_obj.megagroup is False
+
+
+@pytest.mark.asyncio
+async def test_delete_channel_creation_message_keeps_dialog(client_with_auth: ClientFactory) -> None:
+    from pyrogram.raw.functions.channels import CreateChannel as RawCreateChannel, DeleteMessages as RawDeleteMessages
+    from pyrogram.raw.types import InputChannel
+
+    from piltover.db.models import Channel, Dialog, MessageRef, Peer, User
+    from piltover.app.handlers.messages.dialogs import get_dialogs_internal
+    from piltover.tl.types.messages import Dialogs
+
+    client = await client_with_auth(run=True)
+    result = await client.invoke(RawCreateChannel(title="Keep Me", about="", broadcast=True))
+    tl_channel = result.chats[0]
+    db_channel_id = Channel.norm_id(tl_channel.id)
+
+    message = await MessageRef.get(peer__channel_id=db_channel_id)
+    peer = await Peer.get(channel_id=db_channel_id)
+    user = await User.get(phone_number=client.phone_number)
+
+    await client.invoke(RawDeleteMessages(
+        channel=InputChannel(channel_id=tl_channel.id, access_hash=0),
+        id=[message.id],
+    ))
+
+    await peer.refresh_from_db()
+    assert peer.last_message_id == message.id
+    assert await MessageRef.filter(id=message.id).exists() is False
+
+    dialog = await Dialog.get(owner_id=user.id, peer_id=peer.id)
+    assert dialog.visible is True
+
+    dialogs = await get_dialogs_internal(Dialog, Dialogs, Dialogs, user.id, allow_slicing=False)
+    assert any(d.peer.channel_id == tl_channel.id for d in dialogs.dialogs)
+    channel_dialog = next(d for d in dialogs.dialogs if d.peer.channel_id == tl_channel.id)
+    assert channel_dialog.top_message == message.id
 
 
 @pytest.mark.asyncio
@@ -154,6 +291,102 @@ async def test_channel_add_user(
 
 
 @pytest.mark.asyncio
+async def test_supergroup_add_user_service_message(
+        channel_with_clients: ChannelWithClientsFactory, client_with_auth: ClientFactory,
+) -> None:
+    from io import BytesIO
+
+    from piltover.db.enums import MessageType
+    from piltover.db.models import Channel, MessageRef
+    from piltover.tl import TLObject
+    from piltover.tl.types import MessageActionChatAddUser
+
+    channel, (client1,) = await channel_with_clients(
+        supergroup=True, clients_run=True, resolve_channel=True,
+    )
+    client2 = await client_with_auth(run=True)
+
+    user2 = await client1.resolve_user(client2)
+    user1 = await client2.resolve_user(client1)
+
+    await client2.set_privacy(
+        InputPrivacyKeyChatInvite(),
+        InputPrivacyValueAllowUsers(users=[await client2.resolve_peer(user1.id)]),
+    )
+
+    async with client1.expect_updates_m(UpdateChannel, UpdateNewChannelMessage):
+        assert await client1.add_chat_members(channel.id, user2.id)
+
+    from pyrogram.utils import get_channel_id
+
+    db_channel = await Channel.get(id=Channel.norm_id(get_channel_id(channel.id)))
+    message = await MessageRef.filter(
+        peer__channel_id=db_channel.id,
+        content__type=MessageType.SERVICE_CHAT_USER_ADD,
+    ).select_related("content").first()
+    assert message is not None
+    action = TLObject.read(BytesIO(message.content.extra_info))
+    assert isinstance(action, MessageActionChatAddUser)
+    assert user2.id in action.users
+
+
+@pytest.mark.asyncio
+async def test_get_send_as_broadcast_channel(channel_with_clients: ChannelWithClientsFactory) -> None:
+    from piltover.app.handlers.channels import get_send_as
+    from piltover.db.models import Channel, User
+    from piltover.tl import InputPeerChannel, PeerUser
+    from piltover.tl.functions.channels import GetSendAs
+
+    from pyrogram.utils import get_channel_id
+
+    channel, (client,) = await channel_with_clients(clients_run=True, resolve_channel=True)
+    owner = await User.get(phone_number=client.phone_number)
+    input_peer = InputPeerChannel(
+        channel_id=Channel.make_id_from(Channel.norm_id(get_channel_id(channel.id))),
+        access_hash=0,
+    )
+
+    for for_paid_reactions in (False, True):
+        result = await get_send_as(GetSendAs(peer=input_peer, for_paid_reactions=for_paid_reactions), owner)
+        assert len(result.peers) == 1
+        assert isinstance(result.peers[0].peer, PeerUser)
+        assert result.peers[0].peer.user_id == owner.id
+        assert result.chats == []
+        assert len(result.users) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_send_as_supergroup_includes_owned_broadcast(
+        channel_with_clients: ChannelWithClientsFactory, test_channel: ChannelFactory,
+) -> None:
+    from pyrogram.utils import get_channel_id
+
+    from piltover.app.handlers.channels import get_send_as
+    from piltover.db.models import Channel, User
+    from piltover.tl import InputPeerChannel, PeerChannel, PeerUser
+    from piltover.tl.functions.channels import GetSendAs
+
+    supergroup, (client,) = await channel_with_clients(
+        supergroup=True, clients_run=True, resolve_channel=True,
+    )
+    broadcast_id = await test_channel(client, name="send_as_bc")
+    assert await client.set_chat_username(get_channel_id(broadcast_id), "send_as_bc_test")
+
+    owner = await User.get(phone_number=client.phone_number)
+    result = await get_send_as(GetSendAs(
+        peer=InputPeerChannel(
+            channel_id=Channel.make_id_from(Channel.norm_id(get_channel_id(supergroup.id))),
+            access_hash=0,
+        ),
+    ), owner)
+
+    peer_user_ids = [peer.peer.user_id for peer in result.peers if isinstance(peer.peer, PeerUser)]
+    peer_channel_ids = [peer.peer.channel_id for peer in result.peers if isinstance(peer.peer, PeerChannel)]
+    assert owner.id in peer_user_ids
+    assert broadcast_id in peer_channel_ids
+
+
+@pytest.mark.asyncio
 async def test_change_channel_username(channel_with_clients: ChannelWithClientsFactory) -> None:
     channel, (client,) = await channel_with_clients(clients_run=True, resolve_channel=True)
 
@@ -175,6 +408,22 @@ async def test_change_channel_username_to_occupied_by_user(channel_with_clients:
         await client.set_username("test_username")
     with pytest.raises(UsernameOccupied):
         await client.set_chat_username(channel.id, "test_username")
+
+
+@pytest.mark.asyncio
+async def test_change_channel_username_to_invalid(channel_with_clients: ChannelWithClientsFactory) -> None:
+    channel, (client,) = await channel_with_clients(clients_run=True, resolve_channel=True)
+    peer = await client.resolve_peer(channel.id)
+
+    for username in ("tes/t_username", "very_long_username" * 100, "username.with.dots", "a" * 33):
+        with pytest.raises(UsernameInvalid):
+            await client.invoke(RawCheckUsername(channel=peer, username=username))
+
+        with pytest.raises(UsernameInvalid):
+            await client.set_chat_username(channel.id, username)
+
+        channel = await client.get_chat(channel.id)
+        assert channel.username is None
 
 
 @pytest.mark.parametrize(
@@ -346,6 +595,33 @@ async def test_delete_channel_fail_not_owner(channel_with_clients: ChannelWithCl
 
     assert await client1.get_chat(channel.id)
     assert await client2.get_chat(channel.id)
+
+
+@pytest.mark.asyncio
+async def test_broadcast_channel_join_service_message(
+        channel_with_clients: ChannelWithClientsFactory, client_with_auth: ClientFactory, faker: Faker,
+) -> None:
+    from piltover.db.enums import MessageType
+    from piltover.db.models import ChatParticipant, MessageRef, User, Username
+
+    channel, (client1,) = await channel_with_clients(clients_run=True, resolve_channel=True)
+    client2 = await client_with_auth(run=True)
+    client2_user = await User.get(phone_number=client2.phone_number)
+    channel_username = faker.user_name()
+
+    async with client1.expect_updates_m(UpdateChannel):
+        await client1.set_chat_username(channel.id, channel_username)
+
+    async with client2.expect_updates_m(UpdateChannel):
+        await client2.join_chat(channel_username)
+
+    db_channel_id = await Username.get(username=channel_username).values_list("channel_id", flat=True)
+    participant = await ChatParticipant.get(user_id=client2_user.id, channel_id=db_channel_id)
+    assert participant.inviter_id == client2_user.id
+    assert not await MessageRef.filter(
+        peer__channel_id=db_channel_id, content__type=MessageType.SERVICE_CHAT_USER_INVITE_JOIN,
+        content__author_id=client2_user.id,
+    ).exists()
 
 
 @pytest.mark.asyncio

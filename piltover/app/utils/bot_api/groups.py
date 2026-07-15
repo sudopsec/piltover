@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+from loguru import logger
+
 from piltover.db.enums import PeerType
 from piltover.db.models import BotInfo, ChatParticipant, MessageRef, Peer, User
 from piltover.tl import MessageEntityBotCommand, MessageEntityMention
@@ -98,3 +102,21 @@ async def notify_bot_api_recipients(
             await bot_api_updates.enqueue_incoming_message(
                 bot_user, channel_peer, channel_message, channel_post=as_channel_post,
             )
+
+
+async def _notify_bot_api_recipients_safe(
+        messages: dict[Peer, MessageRef], author_id: int | None,
+) -> None:
+    try:
+        await notify_bot_api_recipients(messages, author_id)
+    except Exception as exc:
+        logger.opt(exception=exc).warning("Failed to deliver Bot API update")
+
+
+def schedule_bot_api_notification(
+        messages: dict[Peer, MessageRef], author_id: int | None,
+) -> None:
+    asyncio.create_task(
+        _notify_bot_api_recipients_safe(messages, author_id),
+        name="bot-api-notify",
+    )

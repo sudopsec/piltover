@@ -11,6 +11,8 @@ from loguru import logger
 
 from piltover.app.utils.bot_api.auth import resolve_bot_token
 from piltover.app.utils.bot_api.methods import dispatch_method
+from piltover.app.utils.bot_api.errors import translate_exception
+from piltover.app.utils.bot_api.params import finalize_bot_api_params, parse_query_value
 from piltover.app.utils.bot_api.response import api_error, http_response
 from piltover.db.enums import FileType
 from piltover.db.models import File
@@ -81,7 +83,10 @@ def _parse_params(
     if "?" in path:
         _, query = path.split("?", 1)
         for key, values in parse_qs(query, keep_blank_values=True).items():
-            params[key] = values[-1] if len(values) == 1 else values
+            if len(values) == 1:
+                params[key] = parse_query_value(values[0])
+            else:
+                params[key] = [parse_query_value(value) for value in values]
 
     content_type = headers.get("content-type", "")
     if http_method in ("POST", "PUT", "PATCH") and body:
@@ -96,9 +101,12 @@ def _parse_params(
                 params["_files"] = files
         elif "application/x-www-form-urlencoded" in content_type or not content_type:
             for key, values in parse_qs(body.decode("utf-8"), keep_blank_values=True).items():
-                params[key] = values[-1] if len(values) == 1 else values
+                if len(values) == 1:
+                    params[key] = parse_query_value(values[0])
+                else:
+                    params[key] = [parse_query_value(value) for value in values]
 
-    return params
+    return finalize_bot_api_params(params)
 
 
 async def _serve_file(token: str, file_path: str) -> bytes:
@@ -114,11 +122,13 @@ async def _serve_file(token: str, file_path: str) -> bytes:
     if file is None:
         return http_response(api_error("Not Found", error_code=404))
 
-    from piltover.app.app import app
-    if app._worker is None:
+    from piltover.app.runtime import get_worker
+
+    worker = get_worker()
+    if worker is None:
         return http_response(api_error("Internal Server Error", error_code=500))
 
-    storage = app._worker._storage
+    storage = worker._storage
     if file.type is FileType.PHOTO:
         component = storage.photos
     else:
@@ -156,20 +166,30 @@ async def _handle_bot_api_request(http_method: str, path: str, headers: dict[str
     if match is None:
         return http_response(api_error("Not Found", error_code=404))
 
-    token, api_method = match.group(1), match.group(2)
+    token, api_method = unquote(match.group(1)), match.group(2)
     resolved = await resolve_bot_token(token)
     if resolved is None:
         return http_response(api_error("Unauthorized", error_code=401))
 
     bot, bot_user = resolved
-    params = _parse_params(http_method, headers, path, body)
 
     if http_method not in ("GET", "POST"):
         return http_response(api_error("Method not allowed", error_code=405))
 
     try:
+        params = _parse_params(http_method, headers, path, body)
+    except (json.JSONDecodeError, ValueError) as exc:
+        translated = translate_exception(exc)
+        if translated is not None:
+            return http_response(translated)
+        return http_response(api_error("Bad Request: invalid request parameters"))
+
+    try:
         result = await dispatch_method(bot, bot_user, api_method, params)
     except Exception as exc:
+        translated = translate_exception(exc)
+        if translated is not None:
+            return http_response(translated)
         logger.opt(exception=exc).error("Bot API method {} failed for bot {}", api_method, bot_user.id)
         return http_response(api_error("Internal Server Error", error_code=500))
 

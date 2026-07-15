@@ -1,17 +1,16 @@
 from collections import defaultdict
-from datetime import datetime, UTC
 from typing import cast
 
 from loguru import logger
 from tortoise.transactions import in_transaction
 
 import piltover.app.utils.updates_manager as upd
+from piltover.app.utils.discussion_threads import ensure_discussion_thread
 from piltover.app.bot_handlers import bots
 from piltover.app.handlers.messages.sending import send_created_messages_internal, _resolve_noforwards
 from piltover.db.enums import PeerType
 from piltover.db.models import Peer, MessageRef, MessageContent, User, Presence, MessageDraft, Channel, \
     TaskIqScheduledMessage
-from piltover.db.models.peer import PeerChannelT
 from piltover.enums import ReqHandlerFlags
 from piltover.tl import TLObject
 from piltover.tl.functions.internal import SendScheduledMessage, DeleteScheduledMessage, CreateDiscussionThread, \
@@ -95,48 +94,9 @@ async def create_discussion_thread(request: CreateDiscussionThread) -> TLObject:
 
     # TODO: forward media groups correctly
 
-    async with in_transaction():
-        logger.info(f"Creating discussion thread for message {request.message_id}")
-        message = await MessageRef.select_for_update().get_or_none(id=request.message_id).select_related(
-            *MessageRef.PREFETCH_FIELDS, "peer__channel", "content__author", "content__send_as_channel",
-        )
-        if message is None or not (discussion_channel_id := message.peer.channel.discussion_id):
-            return TaggedBool(value=False)
-
-        discussion_peer: PeerChannelT | None = await Peer.get_or_none(
-            channel_id=discussion_channel_id,
-        ).select_related("channel")
-        if discussion_peer is None:
-            logger.warning(f"Internal channel ({discussion_channel_id}) peer does not exist")
-            return TaggedBool(value=False)
-
-        broadcast_channel = message.peer.channel
-        discussion_content = await message.content.clone_discussion_mirror(
-            discussion_peer, broadcast_channel.id,
-        )
-        discussion_message = await MessageRef.create(
-            peer=discussion_peer,
-            content=discussion_content,
-            pinned=True,
-            is_discussion=True,
-        )
-        await discussion_peer.sync_last_message()
-
-        logger.debug(f"Created discussion message {discussion_message.id} for message {message.id}")
-
-        message.discussion = discussion_message
-        message.discussion_top_message_id = discussion_message.id
-        message.content.edit_date = datetime.now(UTC)
-        message.content.edit_hide = True
-        message.content.version += 1
-        message.content.replies_version += 1
-        await message.save(update_fields=["discussion_id", "discussion_top_message_id"])
-        await message.content.save(update_fields=["edit_date", "edit_hide", "version", "replies_version"])
-
-    await upd.send_messages_channel([discussion_message], discussion_peer.channel)
-    await upd.edit_message_channel(message.peer.channel, message)
-
-    return TaggedBool(value=True)
+    logger.info(f"Creating discussion thread for message {request.message_id}")
+    discussion_message = await ensure_discussion_thread(request.message_id)
+    return TaggedBool(value=discussion_message is not None)
 
 
 @handler.on_request(ProcessMessageToBuiltinBot, ReqHandlerFlags.INTERNAL)
@@ -160,6 +120,8 @@ async def process_message_to_builtin_bot(request: ProcessMessageToBuiltinBot) ->
 @handler.on_request(UpdateStatusForPeers, ReqHandlerFlags.INTERNAL)
 async def update_status_for_peers(request: UpdateStatusForPeers) -> TLObject:
     user = await User.get(id=request.peer_owner)
+    if user.support:
+        return TaggedBool(value=True)
     presence = await Presence.update_to_now(user)
 
     peer_type = PeerType(request.peer_type)

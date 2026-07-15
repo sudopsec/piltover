@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from piltover.db.models import User
@@ -95,17 +94,19 @@ async def entities_to_bot_api(entities: list[dict] | None) -> list[dict] | None:
     return result or None
 
 
-def _parse_entities_param(value: Any) -> list[dict] | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        parsed = json.loads(value)
-        if not isinstance(parsed, list):
-            raise ValueError("entities must be a JSON array")
-        return parsed
-    if isinstance(value, list):
-        return value
-    raise ValueError("entities must be a JSON array")
+def parse_entities_param(value: Any, *, field_name: str = "entities") -> list[dict] | None:
+    from piltover.app.utils.bot_api.params import parse_json_array
+
+    return parse_json_array(value, field_name=field_name)
+
+
+def _entity_int(value: Any, *, field_name: str) -> int:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"entities: invalid {field_name}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"entities: invalid {field_name}") from exc
 
 
 def bot_api_entities_to_tl(entities: list[dict]) -> list[TLMessageEntityBase]:
@@ -119,18 +120,26 @@ def bot_api_entities_to_tl(entities: list[dict]) -> list[TLMessageEntityBase]:
             continue
 
         kwargs: dict[str, Any] = {
-            "offset": int(entity["offset"]),
-            "length": int(entity["length"]),
+            "offset": _entity_int(entity.get("offset"), field_name="offset"),
+            "length": _entity_int(entity.get("length"), field_name="length"),
         }
         if entity_type == "text_link":
+            if "url" not in entity:
+                raise ValueError("entities: text_link requires url")
             kwargs["url"] = str(entity["url"])
         elif entity_type == "text_mention":
             user = entity.get("user") or {}
-            kwargs["user_id"] = int(user.get("id", entity.get("user_id", 0)))
+            kwargs["user_id"] = _entity_int(
+                user.get("id", entity.get("user_id")),
+                field_name="user_id",
+            )
         elif entity_type == "pre" and (language := entity.get("language")):
             kwargs["language"] = str(language)
         elif entity_type == "custom_emoji":
-            kwargs["document_id"] = int(entity.get("custom_emoji_id", entity.get("document_id", 0)))
+            kwargs["document_id"] = _entity_int(
+                entity.get("custom_emoji_id", entity.get("document_id")),
+                field_name="custom_emoji_id",
+            )
 
         result.append(tl_cls(**kwargs))
 

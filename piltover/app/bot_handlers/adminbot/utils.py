@@ -22,6 +22,8 @@ def user_badges(user: User) -> str:
         parts.append("🛡")
     if user.verified:
         parts.append("✓")
+    if getattr(user, "support", False):
+        parts.append("🛟")
     if user.bot:
         parts.append("🤖")
     if user.system:

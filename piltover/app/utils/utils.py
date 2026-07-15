@@ -43,8 +43,8 @@ from piltover.utils import gen_safe_prime
 from piltover.utils.srp import sha256d, itob, btoi
 from piltover.utils.utils import xor
 
-USERNAME_MENTION_REGEX = re.compile(r'@[a-z0-9_]{5,32}')
-USERNAME_REGEX = re.compile(r'^[a-z0-9_]{5,32}$')
+USERNAME_MENTION_REGEX = re.compile(r'@[a-z0-9_]{1,32}')
+USERNAME_REGEX = re.compile(r'^[a-z0-9_]{1,32}$')
 USERNAME_REGEX_NO_LEN = re.compile(r'[a-z0-9_]{1,32}')
 BOT_COMMAND_NAME_REGEX = re.compile(r'[a-zA-Z0-9_]{1,64}')
 BOT_COMMAND_REGEX = re.compile(r'/[a-zA-Z0-9_]{1,64}\b')
@@ -444,8 +444,24 @@ async def _validate_message_entities(text: str, entities: list[TLMessageEntityBa
     return result
 
 
-def _span_to_offset_length(span: tuple[int, int], u8u16: dict[int, int]) -> tuple[int, int, int]:
+def _utf8_span_to_char_span(text: str, start: int, end: int) -> tuple[int, int] | None:
+    data = text.encode("utf-8")
+    if start < 0 or end > len(data) or start >= end:
+        return None
+    try:
+        char_start = len(data[:start].decode("utf-8"))
+        char_end = char_start + len(data[start:end].decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+    if char_end > len(text):
+        return None
+    return char_start, char_end
+
+
+def _span_to_offset_length(span: tuple[int, int], u8u16: dict[int, int]) -> tuple[int, int, int] | None:
     start, end = span
+    if start not in u8u16 or end not in u8u16:
+        return None
     u16start = u8u16[start]
     u16end = u8u16[end]
     length = u16end - u16start
@@ -471,7 +487,10 @@ def _check_entity_inside_entity(entities: list[dict], u16start: int, u16end: int
 def _insert_entity_maybe(
         tlid: int, entities: list[dict], span: tuple[int, int], u8_to_u16: dict[int, int],
 ) -> None:
-    u16start, u16end, length = _span_to_offset_length(span, u8_to_u16)
+    converted = _span_to_offset_length(span, u8_to_u16)
+    if converted is None:
+        return
+    u16start, u16end, length = converted
     if _check_entity_inside_entity(entities, u16start, u16end):
         return
 
@@ -516,7 +535,10 @@ async def process_message_entities(
 
     for span in find_urls(text, require_scheme=False):
         await sleep(0)
-        _insert_entity_maybe(MessageEntityUrl.tlid(), entities, span, u8_to_u16)
+        char_span = _utf8_span_to_char_span(text, span[0], span[1])
+        if char_span is None:
+            continue
+        _insert_entity_maybe(MessageEntityUrl.tlid(), entities, char_span, u8_to_u16)
 
     for command in BOT_COMMAND_REGEX.finditer(text):
         await sleep(0)
@@ -525,14 +547,21 @@ async def process_message_entities(
     return entities
 
 
+def normalize_username(username: str) -> str:
+    return username.lstrip("@").lower().strip()
+
+
 def is_username_valid(username: str) -> bool:
     if not isinstance(username, str):
         return False
-    
-    if not (5 <= len(username) <= 32):
+
+    username = normalize_username(username)
+
+    if not (1 <= len(username) <= 32):
         return False
-    
+
     return USERNAME_REGEX.fullmatch(username) is not None
+
 
 def validate_username(username: str) -> None:
     if not is_username_valid(username):

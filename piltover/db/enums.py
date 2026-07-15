@@ -337,6 +337,7 @@ class AdminBotState(IntEnum):
     WAIT_BOT_EDIT = 5
     WAIT_SYSTEM_TARGET = 6
     WAIT_SYSTEM_TEXT = 7
+    WAIT_ENTITY_EDIT = 8
 
 
 class StickersBotState(IntEnum):

@@ -11,6 +11,9 @@ from tortoise.transactions import in_transaction
 
 import piltover.app.utils.updates_manager as upd
 from piltover.app.handlers.messages.sending import send_message_internal
+from piltover.app.utils.discussion_threads import (
+    discussion_thread_id_for_post, get_broadcast_post, resolve_get_replies_target, resolve_read_discussion_target,
+)
 from piltover.cache import Cache
 from piltover.db.enums import MediaType, PeerType, FileType, MessageType, ChatAdminRights, AdminLogEntryAction, \
     READABLE_FILE_TYPES
@@ -166,25 +169,16 @@ async def get_messages_query_internal(
             query = Q(id=0)
 
     if reply_to_id:
-        query &= Q(reply_to_id=reply_to_id, top_message_id=reply_to_id, join_type=Q.OR)
+        replies_query = Q(reply_to_id=reply_to_id, top_message_id=reply_to_id, join_type=Q.OR)
+        if offset_id:
+            replies_query |= Q(id=reply_to_id)
+        query &= replies_query
 
     if top_msg_id:
         query &= Q(top_message_id=top_msg_id) | Q(id=top_msg_id, join_type=Q.OR)
 
     if isinstance(peer, Peer) and peer.type is PeerType.CHANNEL:
-        channel = peer.channel
-        if channel.min_available_id and channel.min_available_id_force:
-            query &= Q(id__gte=max(channel.min_available_id, channel.min_available_id_force))
-        elif channel.min_available_id_force:
-            query &= Q(id__gte=channel.min_available_id_force)
-        elif channel.min_available_id:
-            query &= Q(id__gte=channel.min_available_id)
-        query &= Q(id__gte=Coalesce(
-            Subquery(
-                ChatParticipant.get_or_none(user_id=user_id, channel=channel).values("min_message_id")
-            ),
-            0,
-        ))
+        query = append_channel_min_message_id_to_query_maybe(peer, query, user=user_id)
 
     limit = max(min(100, limit), 1)
 
@@ -382,7 +376,7 @@ async def format_messages_internal(
         q = Q(peer_id=peer.id)
         if saved_peer is not None:
             q &= Q(content__fwd_header__saved_peer=saved_peer)
-        q = append_channel_min_message_id_to_query_maybe(peer, q)
+        q = append_channel_min_message_id_to_query_maybe(peer, q, user=user_id)
         query = MessageRef.filter(q)
     messages_count = await query.count()
 
@@ -611,7 +605,7 @@ async def get_search_counters(request: GetSearchCounters, user_id: int) -> list[
         saved_peer = await Peer.from_input_peer_raise(user_id, request.saved_peer_id)
         base_query &= Q(content__fwd_header__saved_peer=saved_peer)
 
-    base_query = append_channel_min_message_id_to_query_maybe(peer, base_query)
+    base_query = append_channel_min_message_id_to_query_maybe(peer, base_query, user=user_id)
 
     counters = cast(TLObjectVector[SearchCounter], TLObjectVector())
 
@@ -886,20 +880,11 @@ async def read_message_contents_internal(user_id: int, valid_refs: list[MessageR
     content_ids = [ref.content_id for ref in valid_refs]
     ref_by_content_id = {ref.content_id: ref for ref in valid_refs}
 
-    unread_target_ids = set()
-    for ref in valid_refs:
-        if ref.peer.type is PeerType.CHAT:
-            unread_target_ids.add(Chat.make_id_from(ref.peer.chat_id))
-        elif ref.peer.type is PeerType.CHANNEL:
-            unread_target_ids.add(Channel.make_id_from(ref.peer.channel_id))
-
-    if len(unread_target_ids) == 1:
-        mention = await MessageMention.get_or_none(user_id=user_id, unread_target_id=list(unread_target_ids)[0])
-        mentions = [mention] if mention is not None else []
-    elif unread_target_ids:
-        mentions = await MessageMention.filter(user_id=user_id, unread_target_id__in=unread_target_ids)
-    else:
-        mentions = []
+    mentions = await MessageMention.filter(
+        user_id=user_id,
+        message_id__in=content_ids,
+        unread_target_id__isnull=False,
+    )
 
     refs_with_media = {
         ref.id: ref
@@ -1138,13 +1123,11 @@ async def get_discussion_message(request: GetDiscussionMessage, user_id: int) ->
     if channel is None:
         raise ErrorRpc(error_code=400, error_message="PEER_ID_INVALID")
 
-    message = await MessageRef.get_or_none(
-        Q(id=request.msg_id, peer__channel_id=peer_target_id, content__type=MessageType.REGULAR),
-    ).only("discussion_id", "discussion_top_message_id")
-    if message is None:
+    post = await get_broadcast_post(peer_target_id, request.msg_id)
+    if post is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
-    discussion_thread_id = message.discussion_id or message.discussion_top_message_id
+    discussion_thread_id = await discussion_thread_id_for_post(post)
     if discussion_thread_id is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
@@ -1191,15 +1174,24 @@ async def get_discussion_message(request: GetDiscussionMessage, user_id: int) ->
 @handler.on_request(GetReplies, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def get_replies(request: GetReplies, user_id: int) -> Messages | MessagesSlice:
     peer = await Peer.from_input_peer_raise(user_id, request.peer, "CHANNEL_PRIVATE", peer_types=(PeerType.CHANNEL,))
+    peer, reply_to_id = await resolve_get_replies_target(peer, request.msg_id)
 
     messages = await get_messages_internal(
         user_id, peer, request.max_id, request.min_id, request.offset_id, request.limit, request.add_offset,
-        reply_to_id=request.msg_id,
+        reply_to_id=reply_to_id,
     )
     if not messages:
         return Messages(messages=[], chats=[], users=[])
 
-    return await format_messages_internal(user_id, messages, allow_slicing=True, peer=peer, offset_id=request.offset_id)
+    thread_q = Q(reply_to_id=reply_to_id, top_message_id=reply_to_id, join_type=Q.OR)
+    if request.offset_id:
+        thread_q |= Q(id=reply_to_id)
+    replies_query = Q(peer_id=peer.id) & thread_q
+    replies_query = append_channel_min_message_id_to_query_maybe(peer, replies_query, user=user_id)
+
+    return await format_messages_internal(
+        user_id, messages, allow_slicing=True, peer=peer, offset_id=request.offset_id, query=MessageRef.filter(replies_query),
+    )
 
 
 @handler.on_request(GetMessageReadParticipants, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
@@ -1247,19 +1239,15 @@ async def get_message_read_participants(request: GetMessageReadParticipants, use
 @handler.on_request(ReadDiscussion, ReqHandlerFlags.BOT_NOT_ALLOWED | ReqHandlerFlags.DONT_FETCH_USER)
 async def read_discussion(request: ReadDiscussion, user_id: int) -> bool:
     peer = await Peer.from_input_peer_raise(user_id, request.peer, "CHANNEL_PRIVATE", peer_types=(PeerType.CHANNEL,))
-    channel = peer.channel
 
-    post = await MessageRef.get_or_none(
-        Q(id=request.msg_id, peer__channel_id=channel.id, content__type=MessageType.REGULAR),
-    ).select_related("content").only(
-        "discussion_id", "discussion_top_message_id", "content__author_id",
-    )
-    discussion_thread_id = None if post is None else (post.discussion_id or post.discussion_top_message_id)
-    if post is None or discussion_thread_id is None:
+    target = await resolve_read_discussion_target(peer, request.msg_id)
+    if target is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
+    post = await MessageRef.get(id=target.broadcast_post_id).select_related("content").only("content__author_id")
     post_author_id = post.content.author_id
-    discussion_message = await MessageRef.get_or_none(id=discussion_thread_id).only("id")
+
+    discussion_message = await MessageRef.get_or_none(id=target.discussion_thread_id).only("id")
     if discussion_message is None:
         raise ErrorRpc(error_code=400, error_message="MSG_ID_INVALID")
 
@@ -1281,12 +1269,16 @@ async def read_discussion(request: ReadDiscussion, user_id: int) -> bool:
         await state.save(update_fields=["last_message_id"])
 
     await upd.update_read_channel_discussion_inbox(
-        user_id, channel, request.msg_id, discussion_message.id, read_max_id,
+        user_id,
+        target.broadcast_channel,
+        target.broadcast_post_id,
+        discussion_message.id,
+        read_max_id,
     )
 
     if post_author_id and post_author_id != user_id:
         await upd.update_read_channel_discussion_outbox(
-            channel, discussion_message.id, read_max_id, post_author_id,
+            target.broadcast_channel, discussion_message.id, read_max_id, post_author_id,
         )
 
     return True

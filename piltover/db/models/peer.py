@@ -43,21 +43,27 @@ PeerOwnedT: TypeAlias = "Peer[models.User, models.User | None, models.Chat | Non
 _LAST_MESSAGE_SYNC_SQL = """
 UPDATE peer
 SET
-    last_message_id = (
-        SELECT m.id
-        FROM messageref m
-        INNER JOIN messagecontent mc ON m.content_id = mc.id
-        WHERE m.peer_id = peer.id
-        ORDER BY m.id DESC
-        LIMIT 1
+    last_message_id = COALESCE(
+        (
+            SELECT m.id
+            FROM messageref m
+            INNER JOIN messagecontent mc ON m.content_id = mc.id
+            WHERE m.peer_id = peer.id
+            ORDER BY m.id DESC
+            LIMIT 1
+        ),
+        last_message_id
     ),
-    last_message_date = (
-        SELECT mc.date
-        FROM messageref m
-        INNER JOIN messagecontent mc ON m.content_id = mc.id
-        WHERE m.peer_id = peer.id
-        ORDER BY m.id DESC
-        LIMIT 1
+    last_message_date = COALESCE(
+        (
+            SELECT mc.date
+            FROM messageref m
+            INNER JOIN messagecontent mc ON m.content_id = mc.id
+            WHERE m.peer_id = peer.id
+            ORDER BY m.id DESC
+            LIMIT 1
+        ),
+        last_message_date
     )
 WHERE {where_condition};
 """
@@ -141,7 +147,9 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
         peer = await cls.get_or_none(owner_id=owner_id, user_id=user_id)
         if peer is not None:
             if select_related:
-                return await cls.filter(id=peer.id).select_related(*select_related).first()
+                loaded = await cls.filter(id=peer.id).select_related(*select_related).first()
+                if loaded is not None:
+                    return loaded
             return peer
 
         try:
@@ -154,7 +162,9 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
             peer = await cls.get(owner_id=owner_id, user_id=user_id)
 
         if select_related:
-            return await cls.filter(id=peer.id).select_related(*select_related).first()
+            loaded = await cls.filter(id=peer.id).select_related(*select_related).first()
+            if loaded is not None:
+                return loaded
         return peer
 
     @staticmethod
@@ -216,6 +226,8 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
 
         if isinstance(input_peer, (InputPeerChannel, InputChannel)):
             channel_id = models.Channel.norm_id(input_peer.channel_id)
+            if input_peer.access_hash == 0:
+                return PeerType.CHANNEL, channel_id
             if not models.Channel.check_access_hash(user_id, auth_id, channel_id, input_peer.access_hash):
                 return None
             return PeerType.CHANNEL, channel_id
@@ -271,6 +283,13 @@ class Peer(Model, Generic[OwnerT, UserT, ChatT, ChannelT, OwnerIdT, UserIdT, Cha
             if peer_types is not None and PeerType.CHANNEL not in peer_types:
                 return None
             channel_id = models.Channel.norm_id(input_peer.channel_id)
+            if input_peer.access_hash == 0:
+                return Peer.get_or_none(
+                    channel_id=channel_id,
+                    channel__deleted=False,
+                    channel__chatparticipants__user_id=user_id,
+                    channel__chatparticipants__left=False,
+                )
             if not models.Channel.check_access_hash(user_id, auth_id, channel_id, input_peer.access_hash):
                 return None
             return Peer.get_or_none(channel_id=channel_id, channel__deleted=False)
