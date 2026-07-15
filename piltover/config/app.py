@@ -23,13 +23,13 @@ class _Gifs(BaseModel):
 class _AuthRateLimit(BaseModel):
     send_code_min_interval_seconds: int = Field(default=60, ge=0)
     send_code_per_ip_limit: int = Field(default=5, ge=1)
-    send_code_per_ip_window_seconds: int = Field(default=3600, ge=60)
+    send_code_per_ip_window_seconds: int = Field(default=3600, ge=0)
     send_code_per_key_limit: int = Field(default=20, ge=1)
-    send_code_per_key_window_seconds: int = Field(default=3600, ge=60)
+    send_code_per_key_window_seconds: int = Field(default=3600, ge=0)
     sign_in_fail_limit: int = Field(default=5, ge=1)
-    sign_in_fail_window_seconds: int = Field(default=3600, ge=60)
+    sign_in_fail_window_seconds: int = Field(default=3600, ge=0)
     shadow_ban_fail_threshold: int = Field(default=15, ge=1)
-    shadow_ban_duration_seconds: int = Field(default=86400, ge=60)
+    shadow_ban_duration_seconds: int = Field(default=86400, ge=0)
 
 
 class _AppConfig(BaseModel):
