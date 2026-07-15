@@ -169,7 +169,7 @@ async def send_created_messages_internal(
     for msg_peer, message_ref in messages.items():
         if msg_peer.type is not PeerType.USER or msg_peer.owner_id == author_id:
             continue
-        if message_ref.content.message is None:
+        if message_ref.content.message is None and message_ref.content.media_id is None:
             continue
         owner = await User.get_or_none(id=msg_peer.owner_id)
         if owner is not None and owner.bot:

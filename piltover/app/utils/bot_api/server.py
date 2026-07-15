@@ -3,16 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from email.parser import BytesParser
+from email.policy import HTTP
 from typing import Any
 from urllib.parse import parse_qs, unquote
-
 from loguru import logger
 
 from piltover.app.utils.bot_api.auth import resolve_bot_token
 from piltover.app.utils.bot_api.methods import dispatch_method
 from piltover.app.utils.bot_api.response import api_error, http_response
+from piltover.db.enums import FileType
+from piltover.db.models import File
 
 _BOT_PATH_RE = re.compile(r"^/bot([^/]+)/([^/]+)/?$")
+_FILE_PATH_RE = re.compile(r"^/file/bot([^/]+)/(.+?)/?$")
 
 
 async def _read_http_request(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str], bytes]:
@@ -40,6 +44,35 @@ async def _read_http_request(reader: asyncio.StreamReader) -> tuple[str, str, di
     return method, path, headers, body
 
 
+def _parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, Any], dict[str, tuple[str, bytes, str | None]]]:
+    msg = BytesParser(policy=HTTP).parsebytes(
+        f"Content-Type: {content_type}\r\n\r\n".encode("ascii") + body
+    )
+    params: dict[str, Any] = {}
+    files: dict[str, tuple[str, bytes, str | None]] = {}
+
+    if not msg.is_multipart():
+        return params, files
+
+    for part in msg.iter_parts():
+        disposition = part.get("Content-Disposition", "")
+        if "form-data" not in disposition:
+            continue
+
+        name_match = re.search(r'name="([^"]*)"', disposition)
+        if not name_match:
+            continue
+        name = name_match.group(1)
+        payload = part.get_payload(decode=True) or b""
+        filename_match = re.search(r'filename="([^"]*)"', disposition)
+        if filename_match:
+            files[name] = (filename_match.group(1), payload, part.get_content_type())
+        else:
+            params[name] = payload.decode("utf-8", errors="surrogateescape")
+
+    return params, files
+
+
 def _parse_params(
         http_method: str, headers: dict[str, str], path: str, body: bytes,
 ) -> dict[str, Any]:
@@ -56,18 +89,70 @@ def _parse_params(
             data = json.loads(body.decode("utf-8") or "{}")
             if isinstance(data, dict):
                 params.update(data)
+        elif "multipart/form-data" in content_type:
+            fields, files = _parse_multipart(content_type, body)
+            params.update(fields)
+            if files:
+                params["_files"] = files
         elif "application/x-www-form-urlencoded" in content_type or not content_type:
             for key, values in parse_qs(body.decode("utf-8"), keep_blank_values=True).items():
                 params[key] = values[-1] if len(values) == 1 else values
-        elif "multipart/form-data" in content_type:
-            logger.warning("multipart/form-data is not fully supported in basic Bot API")
 
     return params
 
 
+async def _serve_file(token: str, file_path: str) -> bytes:
+    resolved = await resolve_bot_token(token)
+    if resolved is None:
+        return http_response(api_error("Unauthorized", error_code=401))
+
+    file_id_str = file_path.split(".", 1)[0]
+    if not file_id_str.isdigit():
+        return http_response(api_error("Not Found", error_code=404))
+
+    file = await File.get_or_none(id=int(file_id_str), type__not=FileType.ENCRYPTED)
+    if file is None:
+        return http_response(api_error("Not Found", error_code=404))
+
+    from piltover.app.app import app
+    if app._worker is None:
+        return http_response(api_error("Internal Server Error", error_code=500))
+
+    storage = app._worker._storage
+    if file.type is FileType.PHOTO:
+        component = storage.photos
+    else:
+        component = storage.documents
+
+    location = await component.get_location(file.physical_id)
+    try:
+        with open(location, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return http_response(api_error("Not Found", error_code=404))
+
+    headers = [
+        "HTTP/1.1 200 OK",
+        f"Content-Length: {len(data)}",
+        f"Content-Type: {file.mime_type or 'application/octet-stream'}",
+        "Connection: close",
+        "",
+        "",
+    ]
+    return "\r\n".join(headers).encode("ascii") + data
+
+
 async def _handle_bot_api_request(http_method: str, path: str, headers: dict[str, str], body: bytes) -> bytes:
     path_only = path.split("?", 1)[0]
-    match = _BOT_PATH_RE.match(unquote(path_only))
+    path_only = unquote(path_only)
+
+    file_match = _FILE_PATH_RE.match(path_only)
+    if file_match is not None:
+        if http_method != "GET":
+            return http_response(api_error("Method not allowed", error_code=405))
+        return await _serve_file(file_match.group(1), file_match.group(2))
+
+    match = _BOT_PATH_RE.match(path_only)
     if match is None:
         return http_response(api_error("Not Found", error_code=404))
 

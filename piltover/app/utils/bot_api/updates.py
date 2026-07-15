@@ -31,6 +31,7 @@ class _BotWebhookState:
     last_error_message: str | None = None
     max_connections: int | None = None
     allowed_updates: list[str] | None = None
+    secret_token: str | None = None
 
 
 @dataclass
@@ -39,12 +40,15 @@ class _BotUpdatesState:
     next_update_id: int = 1
     waiters: list[asyncio.Event] = field(default_factory=list)
     webhook: _BotWebhookState = field(default_factory=_BotWebhookState)
+    webhook_pending: list[dict[str, Any]] = field(default_factory=list)
+    polling_allowed_updates: list[str] | None = None
 
 
 class BotApiUpdatesStore:
     MAX_UPDATES_PER_BOT = 10_000
     MAX_UPDATE_AGE_SECONDS = 24 * 60 * 60
     WEBHOOK_TIMEOUT_SECONDS = 10.0
+    WEBHOOK_MAX_RETRIES = 3
 
     def __init__(self) -> None:
         self._bots: dict[int, _BotUpdatesState] = {}
@@ -60,10 +64,13 @@ class BotApiUpdatesStore:
     def get_webhook_info(self, bot_id: int) -> dict[str, Any]:
         webhook = self._state(bot_id).webhook
         state = self._state(bot_id)
+        pending = len(state.webhook_pending)
+        if not webhook.url:
+            pending = len(state.updates)
         result: dict[str, Any] = {
             "url": webhook.url,
             "has_custom_certificate": webhook.has_custom_certificate,
-            "pending_update_count": len(state.updates),
+            "pending_update_count": pending,
         }
         if webhook.ip_address:
             result["ip_address"] = webhook.ip_address
@@ -80,22 +87,26 @@ class BotApiUpdatesStore:
     def set_webhook(
             self, bot_id: int, url: str, *, drop_pending_updates: bool = False,
             allowed_updates: list[str] | None = None, max_connections: int | None = None,
-            ip_address: str | None = None,
+            ip_address: str | None = None, secret_token: str | None = None,
     ) -> None:
         state = self._state(bot_id)
         state.webhook.url = url
         state.webhook.allowed_updates = allowed_updates
         state.webhook.max_connections = max_connections
         state.webhook.ip_address = ip_address
+        state.webhook.secret_token = secret_token
         if drop_pending_updates:
             state.updates.clear()
+            state.webhook_pending.clear()
             state.webhook.pending_update_count = 0
 
     def delete_webhook(self, bot_id: int, *, drop_pending_updates: bool = False) -> None:
         state = self._state(bot_id)
         state.webhook = _BotWebhookState()
+        state.polling_allowed_updates = None
         if drop_pending_updates:
             state.updates.clear()
+            state.webhook_pending.clear()
 
     def _prune_old_updates(self, state: _BotUpdatesState) -> None:
         now = int(time())
@@ -118,8 +129,9 @@ class BotApiUpdatesStore:
                 return update_type
         return None
 
-    def _is_update_allowed(self, state: _BotUpdatesState, update: dict[str, Any]) -> bool:
-        allowed = state.webhook.allowed_updates
+    def _is_update_allowed(
+            self, allowed: list[str] | None, update: dict[str, Any],
+    ) -> bool:
         if not allowed:
             return True
         update_type = self._update_type(update)
@@ -131,27 +143,38 @@ class BotApiUpdatesStore:
     async def _deliver_webhook(self, bot_id: int, url: str, update: dict[str, Any]) -> None:
         state = self._state(bot_id)
         payload = json.dumps(self._public_update(update), ensure_ascii=False).encode("utf-8")
-        try:
-            async with httpx.AsyncClient(timeout=self.WEBHOOK_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    url,
-                    content=payload,
-                    headers={"Content-Type": "application/json"},
-                )
-            if response.status_code != 200:
+        headers = {"Content-Type": "application/json"}
+        if state.webhook.secret_token:
+            headers["X-Telegram-Bot-Api-Secret-Token"] = state.webhook.secret_token
+
+        for attempt in range(self.WEBHOOK_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=self.WEBHOOK_TIMEOUT_SECONDS) as client:
+                    response = await client.post(url, content=payload, headers=headers)
+                if response.status_code == 200:
+                    state.webhook.last_error_date = None
+                    state.webhook.last_error_message = None
+                    if update in state.webhook_pending:
+                        state.webhook_pending.remove(update)
+                    return
                 state.webhook.last_error_date = int(time())
                 state.webhook.last_error_message = f"Wrong HTTP status: {response.status_code}"
                 logger.warning(
-                    "Bot API webhook for bot {} returned status {}",
-                    bot_id, response.status_code,
+                    "Bot API webhook for bot {} returned status {} (attempt {})",
+                    bot_id, response.status_code, attempt + 1,
                 )
-            else:
-                state.webhook.last_error_date = None
-                state.webhook.last_error_message = None
-        except Exception as exc:
-            state.webhook.last_error_date = int(time())
-            state.webhook.last_error_message = str(exc)
-            logger.opt(exception=exc).warning("Bot API webhook delivery failed for bot {}", bot_id)
+            except Exception as exc:
+                state.webhook.last_error_date = int(time())
+                state.webhook.last_error_message = str(exc)
+                logger.opt(exception=exc).warning(
+                    "Bot API webhook delivery failed for bot {} (attempt {})", bot_id, attempt + 1,
+                )
+
+            if attempt < self.WEBHOOK_MAX_RETRIES - 1:
+                await asyncio.sleep(0.5 * (2 ** attempt))
+
+        if update not in state.webhook_pending:
+            state.webhook_pending.append(update)
 
     async def _enqueue_update(self, bot_user: User, update_body: dict[str, Any]) -> None:
         state = self._state(bot_user.id)
@@ -164,8 +187,12 @@ class BotApiUpdatesStore:
         self._prune_old_updates(state)
 
         if state.webhook.url:
-            if self._is_update_allowed(state, update):
+            if self._is_update_allowed(state.webhook.allowed_updates, update):
+                state.webhook_pending.append(update)
                 asyncio.create_task(self._deliver_webhook(bot_user.id, state.webhook.url, update))
+            return
+
+        if not self._is_update_allowed(state.polling_allowed_updates, update):
             return
 
         state.updates.append(update)
@@ -188,11 +215,14 @@ class BotApiUpdatesStore:
 
     async def get_updates(
             self, bot_id: int, *, offset: int | None = None, limit: int = 100, timeout: int = 0,
+            allowed_updates: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if self.has_webhook(bot_id):
             raise _BotApiConflict("can't use getUpdates while webhook is active")
 
         state = self._state(bot_id)
+        if allowed_updates is not None:
+            state.polling_allowed_updates = allowed_updates
         limit = max(1, min(limit, 100))
 
         if offset is not None:
