@@ -24,3 +24,5 @@ package.json
 .env
 .env.sh
 /config.*
+/data/system_avatars/*
+!/data/system_avatars/.gitkeep
