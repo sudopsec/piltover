@@ -69,6 +69,7 @@ max_bots_per_user = 24
 
 # Auth rate limits (send code spam and sign-in brute force protection).
 #[app.auth_rate_limit]
+#enabled = true
 #send_code_min_interval_seconds = 60
 #send_code_per_ip_limit = 5
 #send_code_per_ip_window_seconds = 3600

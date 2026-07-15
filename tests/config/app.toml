@@ -32,6 +32,7 @@ scheduled_instant_send_threshold = 30
 account_delete_wait_seconds = 604800
 
 [app.auth_rate_limit]
+enabled = true
 send_code_min_interval_seconds = 0
 send_code_per_ip_limit = 100
 send_code_per_ip_window_seconds = 3600

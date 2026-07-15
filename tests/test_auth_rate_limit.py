@@ -13,6 +13,7 @@ def memory_cache() -> None:
 
 @pytest.fixture(autouse=True)
 def strict_rate_limits() -> None:
+    APP_CONFIG.auth_rate_limit.enabled = True
     APP_CONFIG.auth_rate_limit.send_code_min_interval_seconds = 60
     APP_CONFIG.auth_rate_limit.send_code_per_ip_limit = 2
     APP_CONFIG.auth_rate_limit.send_code_per_ip_window_seconds = 3600
@@ -67,4 +68,15 @@ async def test_shadow_ban_hides_behind_invalid_code() -> None:
 async def test_clear_sign_in_failures() -> None:
     await rl.record_sign_in_failure("10.0.0.1", 1)
     await rl.clear_sign_in_failures("10.0.0.1", 1)
+    await rl.check_sign_in_allowed("10.0.0.1", 1)
+
+
+@pytest.mark.asyncio
+async def test_rate_limiting_disabled() -> None:
+    APP_CONFIG.auth_rate_limit.enabled = False
+    await rl.record_send_code("10.0.0.1", 1)
+    await rl.check_send_code_allowed("10.0.0.1", 1)
+    for _ in range(APP_CONFIG.auth_rate_limit.shadow_ban_fail_threshold):
+        await rl.record_sign_in_failure("10.0.0.1", 1)
+    assert not await rl.is_shadow_banned("10.0.0.1")
     await rl.check_sign_in_allowed("10.0.0.1", 1)
