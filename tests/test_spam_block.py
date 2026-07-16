@@ -345,7 +345,7 @@ async def test_admin_toggle_spam_block() -> None:
             peer, menu, f"adm:act:spam:{target.id}:u0".encode(),
         )
         assert answer is not None
-        assert "applied" in (answer.message or "").lower()
+        assert "применён" in (answer.message or "").lower()
 
         await target.refresh_from_db()
         assert target.spam_blocked is True
