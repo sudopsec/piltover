@@ -5,6 +5,7 @@
   "private": true,
   "main": "server.js",
   "scripts": {
+    "postinstall": "cd node_modules/mediasoup && node npm-scripts.mjs postinstall",
     "start": "node server.js",
     "dev": "node server.js"
   },
@@ -18,5 +19,8 @@
     "mediasoup": "^3.14.16",
     "socket.io": "^4.8.1",
     "winston": "^3.17.0"
+  },
+  "allowScripts": {
+    "mediasoup": true
   }
 }
