@@ -37,10 +37,7 @@ backend = "memory"
 # Tracing backend. Available backends: console, zipkin, noop.
 backend = "noop"
 
-# Mediasoup SFU for group voice/video calls.
-# Win10 + Telegram on Windows: run mediasoup-server/start-windows.ps1 (NOT WSL).
-# Worker in WSL: api_url = "windows-host" (auto-resolves Windows host IP).
-# SFU in WSL only: api_url = "http://127.0.0.1:3200" + start-win10-webrtc.ps1 relay.
+# Mediasoup SFU for group voice/video calls (mediasoup-server on localhost:3200).
 # HTTP Bot API (https://core.telegram.org/bots/api)
 [system.bot_api]
 enabled = true
