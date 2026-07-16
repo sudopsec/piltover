@@ -27,11 +27,19 @@ async def _make_user(phone: str) -> User:
 
 
 @pytest.mark.asyncio
-async def test_create_group_call_channel_join_muted() -> None:
+async def test_create_group_call_broadcast_channel_join_muted() -> None:
     owner = await _make_user("900100001")
-    channel = await Channel.create(name="VC channel", creator=owner, channel=True, supergroup=True)
+    channel = await Channel.create(name="Live stream", creator=owner, channel=True, supergroup=False)
     group_call = await create_group_call(owner.id, channel)
     assert group_call.join_muted is True
+
+
+@pytest.mark.asyncio
+async def test_create_group_call_supergroup_not_join_muted() -> None:
+    owner = await _make_user("900100001b")
+    channel = await Channel.create(name="Discussion SG", creator=owner, channel=False, supergroup=True)
+    group_call = await create_group_call(owner.id, channel)
+    assert group_call.join_muted is False
 
 
 @pytest.mark.asyncio
@@ -45,12 +53,32 @@ async def test_create_group_call_chat_not_join_muted() -> None:
 @pytest.mark.asyncio
 async def test_resolve_join_muted_for_channel_call() -> None:
     owner = await _make_user("900100003")
-    channel = await Channel.create(name="Muted VC", creator=owner, channel=True, supergroup=True)
+    channel = await Channel.create(name="Muted broadcast", creator=owner, channel=True, supergroup=False)
     group_call = await GroupCall.create(
         creator=owner, channel=channel, title="call", started_at=_started_at(),
         join_muted=True,
     )
     assert resolve_join_muted(False, group_call) is True
+
+
+@pytest.mark.asyncio
+async def test_join_broadcast_channel_participant_muted() -> None:
+    owner = await _make_user("900100003b")
+    member = await _make_user("900100003c")
+    channel = await Channel.create(name="Stream", creator=owner, channel=True, supergroup=False)
+    group_call = await create_group_call(owner.id, channel)
+
+    participant, _ = await join_group_call(
+        member.id,
+        group_call,
+        InputPeerSelf(),
+        muted=False,
+        video_stopped=True,
+        invite_hash=None,
+        client_ssrc=555555,
+    )
+    assert group_call.join_muted is True
+    assert participant.muted is True
 
 
 @pytest.mark.asyncio
@@ -66,10 +94,10 @@ async def test_detect_join_stream_kind() -> None:
 async def test_join_group_call_video_and_presentation() -> None:
     owner = await _make_user("900100004")
     member = await _make_user("900100005")
-    channel = await Channel.create(name="Media VC", creator=owner, channel=True, supergroup=True)
+    channel = await Channel.create(name="Media SG", creator=owner, channel=False, supergroup=True)
     group_call = await GroupCall.create(
         creator=owner, channel=channel, title="call", started_at=_started_at(),
-        join_muted=True,
+        join_muted=False,
     )
 
     participant, _ = await join_group_call(
@@ -81,7 +109,7 @@ async def test_join_group_call_video_and_presentation() -> None:
         invite_hash=None,
         client_ssrc=111111,
     )
-    assert participant.muted is True
+    assert participant.muted is False
 
     video_payload = {
         "payload-types": [{"name": "VP8", "id": 96, "clockrate": 90000}],
@@ -128,7 +156,7 @@ async def test_join_group_call_video_and_presentation() -> None:
 @pytest.mark.asyncio
 async def test_participant_to_tl_without_media() -> None:
     owner = await _make_user("900100006")
-    channel = await Channel.create(name="Audio only", creator=owner, channel=True, supergroup=True)
+    channel = await Channel.create(name="Audio only", creator=owner, channel=False, supergroup=True)
     group_call = await GroupCall.create(
         creator=owner, channel=channel, title="call", started_at=_started_at(),
     )

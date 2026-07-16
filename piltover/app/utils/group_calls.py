@@ -718,7 +718,8 @@ async def create_group_call(
         await discard_active_call(chat_or_channel)
         if title is None:
             title = chat_or_channel.name
-        join_muted = isinstance(chat_or_channel, Channel)
+        # Broadcast channels (трансляции): listeners join muted. Supergroups and chats are for discussion.
+        join_muted = isinstance(chat_or_channel, Channel) and chat_or_channel.channel
         group_call = await GroupCall.create(
             creator_id=user_id,
             chat=chat_or_channel if isinstance(chat_or_channel, Chat) else None,
