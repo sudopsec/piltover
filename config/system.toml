@@ -49,7 +49,7 @@ port = 8081
 
 [system.group_call_sfu]
 enabled = true
-api_url = "windows-host"
+api_url = "http://127.0.0.1:3200"
 public_ip = "127.0.0.1"
 rtc_port = 10000
 # Zipkin address where to send all traces.
