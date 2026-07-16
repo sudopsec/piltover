@@ -1,0 +1,22 @@
+{
+  "name": "piltover-mediasoup-sfu",
+  "version": "1.0.0",
+  "description": "Piltover Mediasoup SFU for Telegram-compatible group calls",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mediasoup": "^3.14.16",
+    "socket.io": "^4.8.1",
+    "winston": "^3.17.0"
+  }
+}
